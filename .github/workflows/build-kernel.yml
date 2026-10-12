@@ -1,0 +1,63 @@
+name: build-kernel-sm8250
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex \
+            libssl-dev libelf-dev device-tree-compiler \
+            python3 python3-pip xz-utils
+
+      - name: Clone AOSP common
+        run: |
+          git clone --depth=1 -b android11-5.4 \
+            https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
+            kernel
+          cd kernel && git rev-parse HEAD
+
+      - name: Install ZyC-Clang
+        run: |
+          mkdir -p $HOME/tc
+          cd $HOME/tc
+          curl -L -o zyc.tar.zst https://github.com/ZyCromerZ/Clang/releases/download/16.0.0-20240116/Clang-16.0.0-20240116.tar.zst
+          tar --zstd -xf zyc.tar.zst
+          echo "TC_DIR=$HOME/tc/Clang-16.0.0-20240116" >> $GITHUB_ENV
+
+      - name: Apply fragment
+        run: |
+          cd kernel
+          cp $GITHUB_WORKSPACE/vendor_xiaomi_cas_gki.fragment arch/arm64/configs/
+          make ARCH=arm64 gki_defconfig
+          ./scripts/kconfig/merge_config.sh -m .config arch/arm64/configs/vendor_xiaomi_cas_gki.fragment
+          make ARCH=arm64 olddefconfig
+
+      - name: Build Image
+        run: |
+          cd kernel
+          PATH="$TC_DIR/bin:$PATH" \
+          make ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 \
+            -j$(nproc) Image
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image
+          path: kernel/arch/arm64/boot/Image
+          retention-days: 7
