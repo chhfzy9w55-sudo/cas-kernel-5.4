@@ -1,0 +1,73 @@
+name: extract-cas-dts
+
+on:
+  workflow_dispatch:
+
+jobs:
+  extract:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Clone Xiaomi kernel (cas-q-oss, shallow)
+        run: |
+          git clone --depth=1 --single-branch -b cas-q-oss \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git \
+            kernel-src
+          cd kernel-src
+          echo "=== HEAD ==="
+          git rev-parse HEAD
+          echo "=== 仓库大小 ==="
+          du -sh .
+      
+      - name: Locate DTS directories
+        run: |
+          echo "=== arch/arm64/boot/dts 结构 ==="
+          find kernel-src/arch/arm64/boot/dts -maxdepth 3 -type d 2>/dev/null | sort | head -40
+          
+          echo ""
+          echo "=== 查找 sm8250 相关 ==="
+          find kernel-src/arch/arm64/boot/dts -iname "*sm8250*" 2>/dev/null | head -20
+          
+          echo ""
+          echo "=== 查找 kona 相关 ==="
+          find kernel-src/arch/arm64/boot/dts -iname "*kona*" 2>/dev/null | head -20
+          
+          echo ""
+          echo "=== 查找 cas 相关 ==="
+          find kernel-src/arch/arm64/boot/dts -iname "*cas*" 2>/dev/null | head -10
+          
+          echo ""
+          echo "=== configs 目录 ==="
+          ls kernel-src/arch/arm64/configs/ | head -20
+      
+      - name: Extract DTS and configs
+        run: |
+          mkdir -p extract
+          
+          if [ -d kernel-src/arch/arm64/boot/dts ]; then
+            cp -r kernel-src/arch/arm64/boot/dts extract/
+          fi
+          
+          if [ -d kernel-src/arch/arm64/configs ]; then
+            cp -r kernel-src/arch/arm64/configs extract/
+          fi
+          
+          echo "=== extract 内容 ==="
+          du -sh extract/*
+          echo "=== 文件总数 ==="
+          find extract -type f | wc -l
+      
+      - name: Create archive
+        run: |
+          tar czf cas-dts-extract.tar.gz extract/
+          ls -la cas-dts-extract.tar.gz
+          echo "=== 压缩包大小 ==="
+          du -h cas-dts-extract.tar.gz
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cas-dts-extract
+          path: cas-dts-extract.tar.gz
+          retention-days: 30
