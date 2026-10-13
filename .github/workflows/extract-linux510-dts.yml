@@ -1,0 +1,51 @@
+name: extract-linux510-dts
+
+on:
+  workflow_dispatch:
+
+jobs:
+  extract:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Clone linux v5.10 (sparse)
+        run: |
+          git clone --depth=1 --filter=blob:none --sparse \
+            -b v5.10 \
+            https://github.com/torvalds/linux.git \
+            linux
+          cd linux
+          git sparse-checkout set arch/arm64/boot/dts/qcom
+          echo "=== HEAD ==="
+          git rev-parse HEAD
+
+      - name: List sm8250 files
+        run: |
+          echo "=== sm8250 相关 ==="
+          ls linux/arch/arm64/boot/dts/qcom/ | grep -iE "sm8250|kona|pm8150|pm8009|pm8010|sm8150"
+
+      - name: Extract files
+        run: |
+          mkdir -p extract
+          cd linux/arch/arm64/boot/dts/qcom
+          for pat in sm8250 kona pm8150 pm8009 pm8010 sm8150; do
+            cp -v *${pat}* ../../../extract/ 2>/dev/null || true
+          done
+          cp -v Makefile ../../../extract/ 2>/dev/null || true
+          echo ""
+          echo "=== extract 内容 ==="
+          ls -la ../../../extract/
+          du -sh ../../../extract/
+
+      - name: Create archive
+        run: |
+          tar czf linux510-dts.tar.gz extract/
+          ls -la linux510-dts.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux510-dts
+          path: linux510-dts.tar.gz
+          retention-days: 30
