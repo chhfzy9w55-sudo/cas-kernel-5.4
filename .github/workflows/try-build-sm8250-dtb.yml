@@ -1,0 +1,93 @@
+name: try-build-sm8250-dtb
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex \
+            libssl-dev libelf-dev device-tree-compiler \
+            python3 python3-pip xz-utils \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Clone 5.10 (sparse: dt-bindings + dts/qcom)
+        run: |
+          git clone --depth=1 --filter=blob:none --sparse \
+            -b v5.10 https://github.com/torvalds/linux.git linux510
+          cd linux510
+          git sparse-checkout set include/dt-bindings arch/arm64/boot/dts/qcom
+
+      - name: Clone 5.4 GKI (sparse: dt-bindings + dts)
+        run: |
+          git clone --depth=1 --filter=blob:none --sparse \
+            -b android11-5.4 \
+            https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
+            kernel54
+          cd kernel54
+          git sparse-checkout set arch/arm64/boot/dts include/dt-bindings
+
+      - name: Merge dt-bindings (只补缺的)
+        run: |
+          cd kernel54/include/dt-bindings
+          for f in clock/qcom,gcc-sm8250.h clock/qcom,gpucc-sm8250.h \
+                   clock/qcom,rpmh.h interconnect/qcom,osm-l3.h \
+                   mailbox/qcom-ipcc.h power/qcom-aoss-qmp.h \
+                   power/qcom-rpmpd.h regulator/qcom,rpmh-regulator.h \
+                   soc/qcom,rpmh-rsc.h; do
+            src=../../../../linux510/include/dt-bindings/$f
+            if [ -f "$src" ]; then
+              if [ -f "$f" ]; then
+                echo "已存在（跳过）: $f"
+              else
+                mkdir -p $(dirname "$f")
+                cp "$src" "$f"
+                echo "补充: $f"
+              fi
+            else
+              echo "5.10 也没有: $f"
+            fi
+          done
+
+      - name: Copy sm8250 dtsi into 5.4
+        run: |
+          cd linux510/arch/arm64/boot/dts/qcom
+          for f in sm8250.dtsi sm8250-mtp.dts pm8009.dtsi pm8150.dtsi pm8150b.dtsi pm8150l.dtsi; do
+            [ -f "$f" ] && cp -v "$f" ../../../../../kernel54/arch/arm64/boot/dts/qcom/
+          done
+
+      - name: Add sm8250-mtp.dtb to Makefile
+        run: |
+          cd kernel54/arch/arm64/boot/dts/qcom
+          if ! grep -q "sm8250-mtp.dtb" Makefile; then
+            echo 'dtb-$(CONFIG_ARCH_QCOM) += sm8250-mtp.dtb' >> Makefile
+            echo "已添加"
+          fi
+          tail -5 Makefile
+
+      - name: Try build dtbs
+        run: |
+          cd kernel54
+          make ARCH=arm64 gki_defconfig > /dev/null 2>&1
+          set +e
+          make ARCH=arm64 dtbs > build.log 2>&1
+          RESULT=$?
+          echo "exit=$RESULT"
+          if [ $RESULT -ne 0 ]; then
+            echo "===== FIRST 30 ERRORS ====="
+            grep -iE "error|fatal|cannot|No such" build.log | head -30
+          fi
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtbs-build-log
+          path: kernel54/build.log
+          retention-days: 30
