@@ -34,7 +34,9 @@ jobs:
             https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
             kernel54
           cd kernel54
-          git sparse-checkout set arch/arm64/boot/dts include/dt-bindings
+          git sparse-checkout set arch/arm64/boot/dts arch/arm64/configs include/dt-bindings
+          echo "=== kernel54 configs 文件数 ==="
+          ls arch/arm64/configs/ | wc -l
           echo "=== kernel54 qcom 文件数 ==="
           ls arch/arm64/boot/dts/qcom/ | wc -l
 
@@ -79,9 +81,12 @@ jobs:
       - name: Try build dtbs
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          make ARCH=arm64 gki_defconfig > /dev/null 2>&1
-          echo "=== gki_defconfig done ==="
           set +e
+          echo "===== gki_defconfig ====="
+          make ARCH=arm64 gki_defconfig 2>&1 | tail -20
+          echo "gki_defconfig exit=$?"
+          echo ""
+          echo "===== dtbs ====="
           make ARCH=arm64 dtbs > build.log 2>&1
           RESULT=$?
           echo "=== dtbs build exit=$RESULT ==="
