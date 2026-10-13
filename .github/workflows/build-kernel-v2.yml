@@ -18,7 +18,20 @@ jobs:
           sudo apt-get install -y \
             build-essential bc bison flex \
             libssl-dev libelf-dev device-tree-compiler \
-            python3 python3-pip xz-utils clang-14 lld-14 llvm-14
+            python3 python3-pip xz-utils \
+            clang-14 lld-14 llvm-14 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Verify toolchain
+        run: |
+          echo "=== clang ==="
+          which clang-14
+          clang-14 --version | head -2
+          echo "=== cross gcc ==="
+          which aarch64-linux-gnu-gcc
+          aarch64-linux-gnu-gcc --version | head -1
+          echo "=== llvm tools ==="
+          which llvm-ar-14 llvm-nm-14 llvm-objcopy-14 ld.lld-14
 
       - name: Clone AOSP common
         run: |
@@ -34,6 +47,8 @@ jobs:
           make ARCH=arm64 gki_defconfig
           ./scripts/kconfig/merge_config.sh -m .config arch/arm64/configs/vendor_xiaomi_cas_gki.fragment
           make ARCH=arm64 olddefconfig
+          echo "=== 关键配置检查 ==="
+          grep -E "^CONFIG_(QCOM_RPMH|DRM_MSM|SERIAL_QCOM_GENI|I2C_QCOM_GENI|SCSI_UFS_QCOM)=" .config || true
 
       - name: Build Image
         run: |
@@ -56,8 +71,8 @@ jobs:
           if [ $RESULT -ne 0 ]; then
             echo "===== BUILD FAILED (exit $RESULT) ====="
             echo ""
-            echo "===== FIRST 10 ERRORS ====="
-            grep -i -m 10 -E "error:|Error [0-9]|undefined" build.log || true
+            echo "===== FIRST 20 ERRORS ====="
+            grep -i -m 20 -E "error:|Error [0-9]|undefined reference|cannot find|No such file" build.log || true
             echo ""
             echo "===== LAST 40 LINES ====="
             tail -40 build.log
