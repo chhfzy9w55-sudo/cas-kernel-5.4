@@ -38,6 +38,7 @@ jobs:
       - name: Build Image
         run: |
           cd kernel
+          set +e
           make ARCH=arm64 \
             CC=clang-14 \
             LD=ld.lld-14 \
@@ -50,7 +51,19 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LLVM=1 \
-            -j$(nproc) Image
+            -j$(nproc) Image > build.log 2>&1
+          RESULT=$?
+          if [ $RESULT -ne 0 ]; then
+            echo "===== BUILD FAILED (exit $RESULT) ====="
+            echo ""
+            echo "===== FIRST 10 ERRORS ====="
+            grep -i -m 10 -E "error:|Error [0-9]|undefined" build.log || true
+            echo ""
+            echo "===== LAST 40 LINES ====="
+            tail -40 build.log
+            exit 1
+          fi
+          ls -la arch/arm64/boot/Image
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
