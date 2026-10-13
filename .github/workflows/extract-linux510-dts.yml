@@ -22,24 +22,25 @@ jobs:
 
       - name: List sm8250 files
         run: |
-          echo "=== sm8250 相关 ==="
-          ls linux/arch/arm64/boot/dts/qcom/ | grep -iE "sm8250|kona|pm8150|pm8009|pm8010|sm8150"
+          echo "=== sm8250/kona/pm 相关文件 ==="
+          ls linux/arch/arm64/boot/dts/qcom/ | grep -iE "sm8250|kona|pm8150|pm8009|pm8010|sm8150" || true
 
       - name: Extract files
         run: |
-          mkdir -p extract
+          mkdir -p $GITHUB_WORKSPACE/extract
           cd linux/arch/arm64/boot/dts/qcom
-          for pat in sm8250 kona pm8150 pm8009 pm8010 sm8150; do
-            cp -v *${pat}* ../../../extract/ 2>/dev/null || true
+          for pat in sm8250 kona pm8150 pm8009 pm8010; do
+            cp -v *${pat}* $GITHUB_WORKSPACE/extract/ 2>/dev/null || true
           done
-          cp -v Makefile ../../../extract/ 2>/dev/null || true
+          cp -v Makefile $GITHUB_WORKSPACE/extract/ 2>/dev/null || true
           echo ""
           echo "=== extract 内容 ==="
-          ls -la ../../../extract/
-          du -sh ../../../extract/
+          ls -la $GITHUB_WORKSPACE/extract/
+          du -sh $GITHUB_WORKSPACE/extract/
 
       - name: Create archive
         run: |
+          cd $GITHUB_WORKSPACE
           tar czf linux510-dts.tar.gz extract/
           ls -la linux510-dts.tar.gz
 
