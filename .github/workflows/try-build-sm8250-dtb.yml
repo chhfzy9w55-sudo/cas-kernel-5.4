@@ -23,8 +23,6 @@ jobs:
             -b v5.10 https://github.com/torvalds/linux.git linux510
           cd linux510
           git sparse-checkout set include/dt-bindings arch/arm64/boot/dts/qcom
-          echo "=== linux510 qcom 文件数 ==="
-          ls arch/arm64/boot/dts/qcom/ | wc -l
 
       - name: Clone 54 kernel
         run: |
@@ -34,11 +32,11 @@ jobs:
             https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
             kernel54
           cd kernel54
-          git sparse-checkout set arch/arm64/boot/dts arch/arm64/configs include/dt-bindings
-          echo "=== kernel54 configs 文件数 ==="
-          ls arch/arm64/configs/ | wc -l
-          echo "=== kernel54 qcom 文件数 ==="
-          ls arch/arm64/boot/dts/qcom/ | wc -l
+          git sparse-checkout set arch/arm64/boot/dts arch/arm64/configs include/dt-bindings scripts
+          echo "=== scripts 目录 ==="
+          ls scripts/ | head -10
+          echo "=== Makefile.ubsan 存在？ ==="
+          ls scripts/Makefile.ubsan
 
       - name: Merge dt bindings
         run: |
@@ -65,39 +63,34 @@ jobs:
           cd $GITHUB_WORKSPACE/linux510/arch/arm64/boot/dts/qcom
           cp -v sm8250.dtsi sm8250-mtp.dts pm8009.dtsi pm8150.dtsi pm8150b.dtsi pm8150l.dtsi \
             $GITHUB_WORKSPACE/kernel54/arch/arm64/boot/dts/qcom/
-          echo ""
-          echo "=== 拷入后 5.4 树中的相关文件 ==="
-          ls $GITHUB_WORKSPACE/kernel54/arch/arm64/boot/dts/qcom/ | grep -iE "sm8250|pm81|pm80"
 
       - name: Add to Makefile
         run: |
           cd $GITHUB_WORKSPACE/kernel54/arch/arm64/boot/dts/qcom
           if ! grep -q "sm8250-mtp.dtb" Makefile; then
             echo 'dtb-$(CONFIG_ARCH_QCOM) += sm8250-mtp.dtb' >> Makefile
-            echo "已添加 sm8250-mtp.dtb 到 Makefile"
           fi
-          tail -5 Makefile
+          tail -3 Makefile
 
       - name: Try build dtbs
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           set +e
           echo "===== gki_defconfig ====="
-          make ARCH=arm64 gki_defconfig 2>&1 | tail -20
-          echo "gki_defconfig exit=$?"
+          make ARCH=arm64 gki_defconfig 2>&1 | tail -10
           echo ""
           echo "===== dtbs ====="
           make ARCH=arm64 dtbs > build.log 2>&1
           RESULT=$?
-          echo "=== dtbs build exit=$RESULT ==="
+          echo "exit=$RESULT"
           echo ""
           echo "===== ERROR SUMMARY ====="
-          grep -iE "error|fatal|No such|undefined" build.log | head -40 || true
+          grep -iE "error|fatal|No such|undefined|not found" build.log | head -40 || true
           echo ""
           echo "===== LAST 60 LINES ====="
           tail -60 build.log
           echo ""
-          echo "===== 产物检查 ====="
+          echo "===== 产物 ====="
           find arch/arm64/boot/dts/qcom -name "*.dtb" 2>/dev/null | head -10
           exit 0
 
