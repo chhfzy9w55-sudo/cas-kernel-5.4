@@ -33,10 +33,6 @@ jobs:
             kernel54
           cd kernel54
           git sparse-checkout set arch/arm64/boot/dts arch/arm64/configs include/dt-bindings scripts
-          echo "=== scripts 目录 ==="
-          ls scripts/ | head -10
-          echo "=== Makefile.ubsan 存在？ ==="
-          ls scripts/Makefile.ubsan
 
       - name: Merge dt bindings
         run: |
@@ -50,11 +46,6 @@ jobs:
             if [ -f "$src" ] && [ ! -f "$f" ]; then
               mkdir -p $(dirname "$f")
               cp "$src" "$f"
-              echo "补充 $f"
-            elif [ -f "$f" ]; then
-              echo "已存在 $f"
-            else
-              echo "5.10 也缺 $f"
             fi
           done
 
@@ -70,34 +61,69 @@ jobs:
           if ! grep -q "sm8250-mtp.dtb" Makefile; then
             echo 'dtb-$(CONFIG_ARCH_QCOM) += sm8250-mtp.dtb' >> Makefile
           fi
-          tail -3 Makefile
 
       - name: Try build dtbs
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          set +e
-          echo "===== gki_defconfig ====="
-          make ARCH=arm64 gki_defconfig 2>&1 | tail -10
-          echo ""
-          echo "===== dtbs ====="
+          make ARCH=arm64 gki_defconfig > gkidef.log 2>&1
+          GK=$?
+          echo "gki_defconfig exit=$GK"
           make ARCH=arm64 dtbs > build.log 2>&1
           RESULT=$?
-          echo "exit=$RESULT"
-          echo ""
-          echo "===== ERROR SUMMARY ====="
-          grep -iE "error|fatal|No such|undefined|not found" build.log | head -40 || true
-          echo ""
-          echo "===== LAST 60 LINES ====="
-          tail -60 build.log
-          echo ""
-          echo "===== 产物 ====="
-          find arch/arm64/boot/dts/qcom -name "*.dtb" 2>/dev/null | head -10
-          exit 0
+          echo "dtbs exit=$RESULT"
+          
+          # 提取错误摘要
+          ERRORS=$(grep -iE "error|fatal|No such|not found|undefined" build.log | head -20)
+          
+          # 检查产物
+          DTBS=$(find arch/arm64/boot/dts/qcom -name "*.dtb" 2>/dev/null | head -10)
+          
+          # 输出到 Annotations（自动显示在页面顶部）
+          if [ $GK -ne 0 ]; then
+            GK_ERR=$(tail -5 gkidef.log)
+            echo "::error title=gki_defconfig 失败::${GK_ERR}"
+          fi
+          
+          if [ $RESULT -ne 0 ]; then
+            ERR_LINE=$(echo "$ERRORS" | head -3 | tr '\n' '|')
+            echo "::error title=dtbs 编译失败 exit=$RESULT::前3个错误: ${ERR_LINE}"
+          else
+            DTB_LINE=$(echo "$DTBS" | tr '\n' ' ')
+            echo "::notice title=dtbs 编译成功::产物: ${DTB_LINE}"
+          fi
+          
+          # 把详细输出写到 job summary（也在页面直接显示）
+          {
+            echo "## dtbs 编译结果"
+            echo ""
+            echo "### gki_defconfig exit=$GK"
+            echo ""
+            echo "### dtbs exit=$RESULT"
+            echo ""
+            echo "### 错误摘要"
+            echo '```'
+            echo "$ERRORS"
+            echo '```'
+            echo ""
+            echo "### LAST 40 LINES"
+            echo '```'
+            tail -40 build.log
+            echo '```'
+            echo ""
+            echo "### 产物"
+            echo '```'
+            echo "$DTBS"
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+          
+          exit $RESULT
 
       - name: Upload log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dtbs-build-log
-          path: kernel54/build.log
+          path: |
+            kernel54/build.log
+            kernel54/gkidef.log
           retention-days: 30
