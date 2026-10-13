@@ -18,48 +18,82 @@ jobs:
 
       - name: Clone linux 510
         run: |
+          cd $GITHUB_WORKSPACE
           git clone --depth=1 --filter=blob:none --sparse \
             -b v5.10 https://github.com/torvalds/linux.git linux510
           cd linux510
           git sparse-checkout set include/dt-bindings arch/arm64/boot/dts/qcom
+          echo "=== linux510 qcom 文件数 ==="
+          ls arch/arm64/boot/dts/qcom/ | wc -l
 
       - name: Clone 54 kernel
         run: |
+          cd $GITHUB_WORKSPACE
           git clone --depth=1 --filter=blob:none --sparse \
             -b android11-5.4 \
             https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
             kernel54
           cd kernel54
           git sparse-checkout set arch/arm64/boot/dts include/dt-bindings
+          echo "=== kernel54 qcom 文件数 ==="
+          ls arch/arm64/boot/dts/qcom/ | wc -l
 
       - name: Merge dt bindings
         run: |
-          cd kernel54/include/dt-bindings
-          for f in clock/qcom,gcc-sm8250.h clock/qcom,gpucc-sm8250.h clock/qcom,rpmh.h interconnect/qcom,osm-l3.h mailbox/qcom-ipcc.h power/qcom-aoss-qmp.h power/qcom-rpmpd.h regulator/qcom,rpmh-regulator.h soc/qcom,rpmh-rsc.h; do
-            src=../../../../linux510/include/dt-bindings/$f
+          cd $GITHUB_WORKSPACE/kernel54/include/dt-bindings
+          for f in clock/qcom,gcc-sm8250.h clock/qcom,gpucc-sm8250.h \
+                   clock/qcom,rpmh.h interconnect/qcom,osm-l3.h \
+                   mailbox/qcom-ipcc.h power/qcom-aoss-qmp.h \
+                   power/qcom-rpmpd.h regulator/qcom,rpmh-regulator.h \
+                   soc/qcom,rpmh-rsc.h; do
+            src=$GITHUB_WORKSPACE/linux510/include/dt-bindings/$f
             if [ -f "$src" ] && [ ! -f "$f" ]; then
               mkdir -p $(dirname "$f")
               cp "$src" "$f"
               echo "补充 $f"
+            elif [ -f "$f" ]; then
+              echo "已存在 $f"
+            else
+              echo "5.10 也缺 $f"
             fi
           done
 
       - name: Copy sm8250 dtsi
         run: |
-          cd linux510/arch/arm64/boot/dts/qcom
-          cp -v sm8250.dtsi sm8250-mtp.dts pm8009.dtsi pm8150.dtsi pm8150b.dtsi pm8150l.dtsi ../../../../../kernel54/arch/arm64/boot/dts/qcom/
+          cd $GITHUB_WORKSPACE/linux510/arch/arm64/boot/dts/qcom
+          cp -v sm8250.dtsi sm8250-mtp.dts pm8009.dtsi pm8150.dtsi pm8150b.dtsi pm8150l.dtsi \
+            $GITHUB_WORKSPACE/kernel54/arch/arm64/boot/dts/qcom/
+          echo ""
+          echo "=== 拷入后 5.4 树中的相关文件 ==="
+          ls $GITHUB_WORKSPACE/kernel54/arch/arm64/boot/dts/qcom/ | grep -iE "sm8250|pm81|pm80"
 
       - name: Add to Makefile
         run: |
-          cd kernel54/arch/arm64/boot/dts/qcom
-          echo 'dtb-$(CONFIG_ARCH_QCOM) += sm8250-mtp.dtb' >> Makefile
+          cd $GITHUB_WORKSPACE/kernel54/arch/arm64/boot/dts/qcom
+          if ! grep -q "sm8250-mtp.dtb" Makefile; then
+            echo 'dtb-$(CONFIG_ARCH_QCOM) += sm8250-mtp.dtb' >> Makefile
+            echo "已添加 sm8250-mtp.dtb 到 Makefile"
+          fi
+          tail -5 Makefile
 
       - name: Try build dtbs
         run: |
-          cd kernel54
-          make ARCH=arm64 gki_defconfig
+          cd $GITHUB_WORKSPACE/kernel54
+          make ARCH=arm64 gki_defconfig > /dev/null 2>&1
+          echo "=== gki_defconfig done ==="
           set +e
-          make ARCH=arm64 dtbs 2>&1 | tee build.log | tail -100
+          make ARCH=arm64 dtbs > build.log 2>&1
+          RESULT=$?
+          echo "=== dtbs build exit=$RESULT ==="
+          echo ""
+          echo "===== ERROR SUMMARY ====="
+          grep -iE "error|fatal|No such|undefined" build.log | head -40 || true
+          echo ""
+          echo "===== LAST 60 LINES ====="
+          tail -60 build.log
+          echo ""
+          echo "===== 产物检查 ====="
+          find arch/arm64/boot/dts/qcom -name "*.dtb" 2>/dev/null | head -10
           exit 0
 
       - name: Upload log
@@ -68,3 +102,4 @@ jobs:
         with:
           name: dtbs-build-log
           path: kernel54/build.log
+          retention-days: 30
