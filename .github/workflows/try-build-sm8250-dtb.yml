@@ -6,7 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Install deps
         run: |
@@ -24,15 +24,16 @@ jobs:
           cd linux510
           git sparse-checkout set include/dt-bindings arch/arm64/boot/dts/qcom
 
-      - name: Clone 54 kernel
+      - name: Clone 54 kernel full
         run: |
           cd $GITHUB_WORKSPACE
-          git clone --depth=1 --filter=blob:none --sparse \
-            -b android11-5.4 \
+          git clone --depth=1 -b android11-5.4 \
             https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
             kernel54
           cd kernel54
-          git sparse-checkout set arch/arm64/boot/dts arch/arm64/configs include/dt-bindings scripts
+          echo "=== HEAD ==="
+          git rev-parse HEAD
+          du -sh .
 
       - name: Merge dt bindings
         run: |
@@ -46,6 +47,7 @@ jobs:
             if [ -f "$src" ] && [ ! -f "$f" ]; then
               mkdir -p $(dirname "$f")
               cp "$src" "$f"
+              echo "补充 $f"
             fi
           done
 
@@ -66,24 +68,30 @@ jobs:
         run: |
           set +e
           cd $GITHUB_WORKSPACE/kernel54
+          echo "===== gki_defconfig ====="
           make ARCH=arm64 gki_defconfig > gkidef.log 2>&1
           GK=$?
-          echo "gki_defconfig exit=$GK"
+          echo "exit=$GK"
+          echo ""
+          echo "===== dtbs ====="
           make ARCH=arm64 dtbs > build.log 2>&1
           RESULT=$?
-          echo "dtbs exit=$RESULT"
+          echo "exit=$RESULT"
           
           ERRORS=$(grep -iE "error|fatal|No such|not found|undefined" build.log | head -20)
           DTBS=$(find arch/arm64/boot/dts/qcom -name "*.dtb" 2>/dev/null | head -10)
           
           if [ $GK -ne 0 ]; then
-            GK_ERR=$(tail -5 gkidef.log)
+            GK_ERR=$(tail -5 gkidef.log | tr '\n' '|')
             echo "::error title=gki_defconfig 失败::${GK_ERR}"
           fi
           
           if [ $RESULT -ne 0 ]; then
             ERR_LINE=$(echo "$ERRORS" | head -3 | tr '\n' '|')
             echo "::error title=dtbs 编译失败 exit=$RESULT::前3个错误: ${ERR_LINE}"
+          else
+            DTB_LINE=$(echo "$DTBS" | tr '\n' ' ')
+            echo "::notice title=dtbs 编译成功::产物: ${DTB_LINE}"
           fi
           
           {
@@ -92,6 +100,11 @@ jobs:
             echo "### gki_defconfig exit=$GK"
             echo ""
             echo "### dtbs exit=$RESULT"
+            echo ""
+            echo "### gki_defconfig 最后 20 行"
+            echo '```'
+            tail -20 gkidef.log
+            echo '```'
             echo ""
             echo "### 错误摘要"
             echo '```'
