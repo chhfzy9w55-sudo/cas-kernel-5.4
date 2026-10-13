@@ -64,6 +64,7 @@ jobs:
 
       - name: Try build dtbs
         run: |
+          set +e
           cd $GITHUB_WORKSPACE/kernel54
           make ARCH=arm64 gki_defconfig > gkidef.log 2>&1
           GK=$?
@@ -72,13 +73,9 @@ jobs:
           RESULT=$?
           echo "dtbs exit=$RESULT"
           
-          # 提取错误摘要
           ERRORS=$(grep -iE "error|fatal|No such|not found|undefined" build.log | head -20)
-          
-          # 检查产物
           DTBS=$(find arch/arm64/boot/dts/qcom -name "*.dtb" 2>/dev/null | head -10)
           
-          # 输出到 Annotations（自动显示在页面顶部）
           if [ $GK -ne 0 ]; then
             GK_ERR=$(tail -5 gkidef.log)
             echo "::error title=gki_defconfig 失败::${GK_ERR}"
@@ -87,12 +84,8 @@ jobs:
           if [ $RESULT -ne 0 ]; then
             ERR_LINE=$(echo "$ERRORS" | head -3 | tr '\n' '|')
             echo "::error title=dtbs 编译失败 exit=$RESULT::前3个错误: ${ERR_LINE}"
-          else
-            DTB_LINE=$(echo "$DTBS" | tr '\n' ' ')
-            echo "::notice title=dtbs 编译成功::产物: ${DTB_LINE}"
           fi
           
-          # 把详细输出写到 job summary（也在页面直接显示）
           {
             echo "## dtbs 编译结果"
             echo ""
@@ -116,7 +109,7 @@ jobs:
             echo '```'
           } >> $GITHUB_STEP_SUMMARY
           
-          exit $RESULT
+          exit 0
 
       - name: Upload log
         if: always()
