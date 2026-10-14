@@ -33,6 +33,8 @@ jobs:
           git clone --depth=1 -b android11-5.4 \
             https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
             kernel54
+          cd kernel54
+          git rev-parse HEAD
 
       - name: Merge dt bindings force
         run: |
@@ -46,7 +48,7 @@ jobs:
             [ -f "$src" ] && mkdir -p $(dirname "$f") && cp -f "$src" "$f"
           done
 
-      - name: Copy sm8250 base dtsi
+      - name: Copy sm8250 dtsi
         run: |
           cd $GITHUB_WORKSPACE/linux510/arch/arm64/boot/dts/qcom
           cp -v sm8250.dtsi pm8009.dtsi pm8150.dtsi pm8150b.dtsi pm8150l.dtsi \
@@ -66,12 +68,63 @@ jobs:
 
       - name: Try build cas dtb
         run: |
-          cd $GITHUB_WORKSPACE/kernel54
           set +e
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CLANG_DIR=toolchain/clang
-          make ARCH=arm64 dtbs 2>&1 | tee build.log
-          echo "EXIT_CODE=${PIPESTATUS[0]}"
-          echo "ERRORS:"
-          grep -E "error:|Error [0-9]" build.log | head -50
+          cd $GITHUB_WORKSPACE/kernel54
+          make ARCH=arm64 gki_defconfig > /dev/null 2>&1
+          make ARCH=arm64 dtbs > build.log 2>&1
+          RESULT=$?
+          echo "dtbs exit=$RESULT"
+          
+          ERRORS=$(grep -iE "error|fatal|No such|not found|undefined" build.log | head -20)
+          CAS_DTB=$(find arch/arm64/boot/dts/qcom -name "sm8250-cas.dtb" 2>/dev/null)
+          
+          if [ $RESULT -ne 0 ]; then
+            ERR_LINE=$(echo "$ERRORS" | head -3 | tr '\n' '|')
+            echo "::error title=cas dtb 编译失败 exit=$RESULT::前3个错误: ${ERR_LINE}"
+          else
+            echo "::notice title=cas dtb 编译成功::产物: $CAS_DTB"
+          fi
+          
+          {
+            echo "## cas dtb 编译结果"
+            echo ""
+            echo "### dtbs exit=$RESULT"
+            echo ""
+            echo "### 错误摘要"
+            echo '```'
+            echo "$ERRORS"
+            echo '```'
+            echo ""
+            echo "### LAST 60 LINES"
+            echo '```'
+            tail -60 build.log
+            echo '```'
+            echo ""
+            echo "### cas dtb 产物"
+            echo '```'
+            echo "$CAS_DTB"
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+          exit 0
+
+      - name: Commit dtb back
+        if: success()
+        run: |
+          cd $GITHUB_WORKSPACE
+          DTB=kernel54/arch/arm64/boot/dts/qcom/sm8250-cas.dtb
+          if [ -f "$DTB" ]; then
+            cp "$DTB" ./sm8250-cas.dtb
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add sm8250-cas.dtb
+            git commit -m "ci: add sm8250-cas.dtb" || true
+            git push || true
+          fi
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cas-dtb-build-log
+          path: kernel54/build.log
+          retention-days: 30
