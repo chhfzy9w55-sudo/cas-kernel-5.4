@@ -1,0 +1,124 @@
+name: build-cas-dtb
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex \
+            libssl-dev libelf-dev device-tree-compiler \
+            python3 python3-pip xz-utils \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Clone linux 510
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth=1 --filter=blob:none --sparse \
+            -b v5.10 https://github.com/torvalds/linux.git linux510
+          cd linux510
+          git sparse-checkout set include/dt-bindings arch/arm64/boot/dts/qcom
+
+      - name: Clone 54 kernel full
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth=1 -b android11-5.4 \
+            https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
+            kernel54
+
+      - name: Merge dt bindings force
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54/include/dt-bindings
+          for f in clock/qcom,gcc-sm8250.h clock/qcom,gpucc-sm8250.h \
+                   clock/qcom,rpmh.h interconnect/qcom,osm-l3.h \
+                   mailbox/qcom-ipcc.h power/qcom-aoss-qmp.h \
+                   power/qcom-rpmpd.h regulator/qcom,rpmh-regulator.h \
+                   soc/qcom,rpmh-rsc.h; do
+            src=$GITHUB_WORKSPACE/linux510/include/dt-bindings/$f
+            [ -f "$src" ] && mkdir -p $(dirname "$f") && cp -f "$src" "$f"
+          done
+
+      - name: Copy sm8250 base dtsi
+        run: |
+          cd $GITHUB_WORKSPACE/linux510/arch/arm64/boot/dts/qcom
+          cp -v sm8250.dtsi pm8009.dtsi pm8150.dtsi pm8150b.dtsi pm8150l.dtsi \
+            $GITHUB_WORKSPACE/kernel54/arch/arm64/boot/dts/qcom/
+
+      - name: Generate cas dts
+        run: |
+          cd $GITHUB_WORKSPACE/linux510/arch/arm64/boot/dts/qcom
+          cp -v sm8250-mtp.dts $GITHUB_WORKSPACE/kernel54/arch/arm64/boot/dts/qcom/sm8250-cas.dts
+          
+          cd $GITHUB_WORKSPACE/kernel54/arch/arm64/boot/dts/qcom
+          
+          sed -i 's|model = "Qualcomm Technologies, Inc. SM8250 MTP";|model = "Xiaomi Mi 10 Ultra (cas)";|' sm8250-cas.dts
+          sed -i 's|compatible = "qcom,sm8250-mtp";|compatible = "qcom,sm8250-cas", "qcom,sm8250";|' sm8250-cas.dts
+          
+          printf '\n&i2c3 {\n\tstatus = "okay";\n};\n' >> sm8250-cas.dts
+          printf '\n&i2c11 {\n\tstatus = "okay";\n};\n' >> sm8250-cas.dts
+          printf '\n&i2c16 {\n\tstatus = "okay";\n};\n' >> sm8250-cas.dts
+          
+          echo "=== 生成结果 ==="
+          wc -l sm8250-cas.dts
+          tail -20 sm8250-cas.dts
+
+      - name: Add cas to Makefile
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54/arch/arm64/boot/dts/qcom
+          if ! grep -q "sm8250-cas.dtb" Makefile; then
+            echo 'dtb-$(CONFIG_ARCH_QCOM) += sm8250-cas.dtb' >> Makefile
+          fi
+
+      - name: Try build cas dtb
+        run: |
+          set +e
+          cd $GITHUB_WORKSPACE/kernel54
+          make ARCH=arm64 gki_defconfig > /dev/null 2>&1
+          make ARCH=arm64 dtbs > build.log 2>&1
+          RESULT=$?
+          echo "dtbs exit=$RESULT"
+          
+          ERRORS=$(grep -iE "error|fatal|No such|not found|undefined" build.log | head -20)
+          CAS_DTB=$(find arch/arm64/boot/dts/qcom -name "sm8250-cas.dtb" 2>/dev/null)
+          
+          if [ $RESULT -ne 0 ]; then
+            ERR_LINE=$(echo "$ERRORS" | head -3 | tr '\n' '|')
+            echo "::error title=cas dtb 编译失败 exit=$RESULT::前3个错误: ${ERR_LINE}"
+          else
+            echo "::notice title=cas dtb 编译成功::产物: $CAS_DTB"
+          fi
+          
+          {
+            echo "## cas dtb 编译结果"
+            echo ""
+            echo "### dtbs exit=$RESULT"
+            echo ""
+            echo "### 错误摘要"
+            echo '```'
+            echo "$ERRORS"
+            echo '```'
+            echo ""
+            echo "### LAST 60 LINES"
+            echo '```'
+            tail -60 build.log
+            echo '```'
+            echo ""
+            echo "### cas dtb 产物"
+            echo '```'
+            echo "$CAS_DTB"
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+          exit 0
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cas-dtb-build-log
+          path: kernel54/build.log
+          retention-days: 30
