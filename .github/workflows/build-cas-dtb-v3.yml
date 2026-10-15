@@ -64,9 +64,17 @@ jobs:
           printf '\n&i2c3 {\n\tstatus = "okay";\n};\n' >> sm8250-cas.dts
           printf '\n&i2c11 {\n\tstatus = "okay";\n};\n' >> sm8250-cas.dts
           printf '\n&i2c16 {\n\tstatus = "okay";\n};\n' >> sm8250-cas.dts
+          
+          if [ -f "$GITHUB_WORKSPACE/patches/patch_02_aw8697.dts" ]; then
+            echo "=== 追加 patch_02_aw8697 ==="
+            cat $GITHUB_WORKSPACE/patches/patch_02_aw8697.dts >> sm8250-cas.dts
+          else
+            echo "WARNING: patch_02_aw8697.dts 不存在"
+          fi
+          
           echo "=== 生成结果 ==="
           wc -l sm8250-cas.dts
-          tail -20 sm8250-cas.dts
+          tail -30 sm8250-cas.dts
 
       - name: Add cas to Makefile
         run: |
@@ -120,11 +128,10 @@ jobs:
           DTB=kernel54/arch/arm64/boot/dts/qcom/sm8250-cas.dtb
           if [ -f "$DTB" ]; then
             cp "$DTB" ./sm8250-cas.dtb
-            ls -la sm8250-cas.dtb
             git config user.name "github-actions"
             git config user.email "actions@github.com"
             git add sm8250-cas.dtb
-            git commit -m "ci: add sm8250-cas.dtb" || true
+            git commit -m "ci: add aw8697 to cas dtb" || true
             git push || true
           fi
 
