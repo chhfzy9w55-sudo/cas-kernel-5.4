@@ -1,0 +1,53 @@
+name: fetch-cas-drivers
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Sparse clone cas-q-oss drivers
+        run: |
+          git clone --depth=1 --filter=blob:none --sparse \
+            -b cas-q-oss \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git \
+            cas-q-oss
+          cd cas-q-oss
+          git sparse-checkout set \
+            drivers \
+            arch/arm64/boot/dts \
+            arch/arm64/configs \
+            sound \
+            include
+          echo "=== 完成 ==="
+          du -sh .
+          du -sh drivers/
+          du -sh arch/
+
+      - name: List key drivers
+        run: |
+          cd cas-q-oss
+          echo "=== drivers 目录 ==="
+          ls drivers/ | head -50
+          echo ""
+          echo "=== 关键驱动 ==="
+          ls drivers/gpu/drm/msm/ 2>/dev/null | head -20
+          ls drivers/input/touchscreen/ 2>/dev/null | head -20
+          ls drivers/power/supply/ 2>/dev/null | head -30
+
+      - name: Create archive
+        run: |
+          cd cas-q-oss
+          tar czf /tmp/cas-drivers.tar.gz drivers/ arch/arm64/boot/dts/ arch/arm64/configs/ sound/ include/ 2>/dev/null || \
+          tar czf /tmp/cas-drivers.tar.gz drivers/ arch/arm64/boot/dts/ arch/arm64/configs/
+          ls -la /tmp/cas-drivers.tar.gz
+          du -h /tmp/cas-drivers.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cas-q-oss-drivers
+          path: /tmp/cas-drivers.tar.gz
+          retention-days: 30
