@@ -1,0 +1,102 @@
+name: fetch-cas-keyfiles
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Sparse clone cas-q-oss
+        run: |
+          git clone --depth=1 --filter=blob:none --sparse \
+            -b cas-q-oss \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git \
+            cas-q-oss
+          cd cas-q-oss
+          git sparse-checkout set \
+            arch/arm64/boot/dts \
+            arch/arm64/configs \
+            drivers/gpu/drm/msm \
+            drivers/input/touchscreen \
+            drivers/power/supply \
+            drivers/soc/qcom \
+            drivers/input/misc \
+            include/dt-bindings
+          du -sh .
+
+      - name: Extract keyfiles
+        run: |
+          mkdir -p keyfiles
+          cd cas-q-oss
+
+          # 1. 只提取 Makefile 和 Kconfig（结构信息）
+          find drivers/gpu/drm/msm drivers/input/touchscreen drivers/power/supply drivers/soc/qcom drivers/input/misc \
+            -maxdepth 2 -name "Makefile" -o -maxdepth 2 -name "Kconfig" 2>/dev/null | \
+            while read f; do
+              mkdir -p "../keyfiles/$(dirname $f)"
+              cp "$f" "../keyfiles/$f"
+            done
+
+          # 2. configs 全部（小）
+          mkdir -p ../keyfiles/arch/arm64/configs
+          cp -r arch/arm64/configs/* ../keyfiles/arch/arm64/configs/ 2>/dev/null
+
+          # 3. cas 相关 dts（只 cas 和 sm8250 关键字）
+          mkdir -p ../keyfiles/dts
+          find arch/arm64/boot/dts -name "*cas*" -o -name "*sm8250*" -o -name "*kona*" 2>/dev/null | \
+            head -50 | while read f; do
+              mkdir -p "../keyfiles/$(dirname $f)"
+              cp "$f" "../keyfiles/$f" 2>/dev/null
+            done
+
+          # 4. dt-bindings（小）
+          mkdir -p ../keyfiles/include/dt-bindings
+          cp -r include/dt-bindings/* ../keyfiles/include/dt-bindings/ 2>/dev/null
+
+          echo "=== keyfiles 大小 ==="
+          du -sh ../keyfiles/
+
+          echo ""
+          echo "=== 顶层结构 ==="
+          find ../keyfiles -maxdepth 3 -type d | head -30
+
+      - name: Create archive
+        run: |
+          tar czf keyfiles.tar.gz keyfiles/
+          ls -la keyfiles.tar.gz
+          du -h keyfiles.tar.gz
+
+      - name: Check size
+        run: |
+          SIZE=$(stat -c%s keyfiles.tar.gz)
+          echo "压缩包大小: $SIZE 字节"
+          if [ $SIZE -gt 90000000 ]; then
+            echo "::error::超过 90MB，不能 push"
+            exit 1
+          fi
+          echo "::notice::大小合适，可以 push"
+
+      - name: Commit back
+        run: |
+          cp keyfiles.tar.gz ./cas-keyfiles.tar.gz
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add cas-keyfiles.tar.gz
+          git commit -m "ci: add cas-q-oss keyfiles" || true
+          git push || true
+          echo "已 push 到仓库根目录"
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cas-keyfiles
+          path: keyfiles.tar.gz
+          retention-days: 30
