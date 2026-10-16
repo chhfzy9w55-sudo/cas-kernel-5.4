@@ -44,53 +44,29 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           
-          # 批量拉取驱动目录
-          declare -a DIRS=(
-            "drivers/input/misc/aw8697_haptic"
-            "drivers/input/touchscreen/fts_521"
-            "drivers/input/touchscreen/st"
-            "drivers/input/touchscreen/xiaomi"
-            "drivers/power/supply/cas_qcom"
-            "drivers/power/supply/maxim"
-            "drivers/power/supply/ti"
-            "drivers/soc/qcom/icnss2"
-            "drivers/soc/qcom/memshare"
-            "drivers/soc/qcom/rmnet_ctl"
-          )
-          
-          for dir in "${DIRS[@]}"; do
-            echo "=== 拉取 $dir ==="
+          for dir in \
+            "drivers/input/misc/aw8697_haptic" \
+            "drivers/power/supply/cas_qcom" \
+            "drivers/input/touchscreen/fts_521" \
+            "drivers/soc/qcom/icnss2"; do
+            echo "=== $dir ==="
             mkdir -p "$dir"
-            
-            # 先通过 API 列目录
             API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$dir?ref=cas-q-oss"
-            FILES=$(curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}')
-            
-            if [ -z "$FILES" ]; then
-              echo "  目录不存在或为空: $dir"
-              rmdir "$dir" 2>/dev/null
-              continue
-            fi
-            
-            for f in $FILES; do
+            curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
               curl -sL --max-time 60 -o "$dir/$f" "$BASE/$dir/$f" 2>/dev/null
             done
-            
-            ls -la "$dir/" | head -10
+            ls "$dir/" | head -10
           done
 
       - name: Report fetched drivers
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          echo "=== 拉取统计 ==="
           for d in drivers/input/misc/aw8697_haptic \
-                   drivers/input/touchscreen/fts_521 \
                    drivers/power/supply/cas_qcom \
+                   drivers/input/touchscreen/fts_521 \
                    drivers/soc/qcom/icnss2; do
             if [ -d "$d" ]; then
-              COUNT=$(ls "$d" | wc -l)
-              SIZE=$(du -sh "$d" | awk '{print $1}')
-              echo "$d: $COUNT files, $SIZE"
+              echo "$d: $(ls $d | wc -l) files, $(du -sh $d | awk '{print $1}')"
             fi
           done
 
@@ -98,7 +74,6 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           
-          # 批量 patch：do_gettimeofday + asm/uaccess.h
           find drivers/input/misc/aw8697_haptic \
                drivers/input/touchscreen \
                drivers/power/supply \
@@ -108,7 +83,6 @@ jobs:
               echo "patch: $f"
               sed -i 's|<asm/uaccess.h>|<linux/uaccess.h>|g' "$f"
               
-              # do_gettimeofday patch
               if grep -q "do_gettimeofday" "$f"; then
                 LAST=$(grep -n "^#include" "$f" | tail -1 | cut -d: -f1)
                 head -${LAST} "$f" > /tmp/patched.c
@@ -119,19 +93,122 @@ jobs:
               fi
             fi
           done
-          
-          echo "patch 完成"
 
       - name: Hook Kconfig Makefile
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          # 只接入关键几个
-          for entry in "drivers/input/misc/aw8697_haptic:Kconfig:Makefile" \
-                       "drivers/power/supply/cas_qcom:Kconfig:Makefile"; do
-            IFS=: read dir k m <<< "$entry"
-            if [ -f "$dir/$k" ]; then
-              parent=$(dirname "$dir")
-              grep -q "$(basename $dir)" "$parent/Kconfig" || \
-                echo "source \"$dir/Kconfig\"" >> "$parent/Kconfig"
-              grep -q "$(basename $dir)" "$parent/Makefile" || \
-                echo "obj-\$(CONFIG_$(echo $(basename $dir) 
+          
+          echo "=== aw8697 ==="
+          if [ -f drivers/input/misc/aw8697_haptic/Kconfig ]; then
+            echo 'source "drivers/input/misc/aw8697_haptic/Kconfig"' >> drivers/input/misc/Kconfig
+            echo 'obj-$(CONFIG_INPUT_AW8697_HAPTIC) += aw8697_haptic/' >> drivers/input/misc/Makefile
+            echo "hooked"
+          fi
+          
+          echo "=== cas_qcom ==="
+          if [ -f drivers/power/supply/cas_qcom/Kconfig ]; then
+            echo 'source "drivers/power/supply/cas_qcom/Kconfig"' >> drivers/power/supply/Kconfig
+            echo 'obj-y += cas_qcom/' >> drivers/power/supply/Makefile
+            echo "hooked"
+          else
+            echo "cas_qcom Kconfig missing"
+            ls drivers/power/supply/ | head -20
+          fi
+          
+          echo "=== fts_521 ==="
+          if [ -f drivers/input/touchscreen/fts_521/Kconfig ]; then
+            echo 'source "drivers/input/touchscreen/fts_521/Kconfig"' >> drivers/input/touchscreen/Kconfig
+            echo 'obj-$(CONFIG_TOUCHSCREEN_FTS) += fts_521/' >> drivers/input/touchscreen/Makefile
+            echo "hooked"
+          fi
+          
+          echo "=== 验证 ==="
+          tail -2 drivers/input/misc/Kconfig
+          tail -2 drivers/power/supply/Kconfig
+          tail -2 drivers/input/touchscreen/Kconfig
+
+      - name: Enable key configs
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          {
+            echo 'CONFIG_INPUT_AW8697_HAPTIC=m'
+            echo 'CONFIG_QPNP_SMB5_CAS=m'
+            echo 'CONFIG_CHARGER_BQ25790=m'
+            echo 'CONFIG_FUEL_GAUGE_BQ28Z610=m'
+            echo 'CONFIG_CP_MAX77932=m'
+          } >> arch/arm64/configs/gki_defconfig
+          make ARCH=arm64 gki_defconfig > /dev/null 2>&1
+          grep -E "AW8697|SMB5_CAS|BQ25790|BQ28Z610|MAX77932" .config || echo "无匹配配置"
+
+      - name: Prepare kernel
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          make ARCH=arm64 \
+            CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 \
+            OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 \
+            LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            prepare modules_prepare > prep.log 2>&1
+          echo "prep exit=$?"
+
+      - name: Build aw8697
+        run: |
+          set +e
+          cd $GITHUB_WORKSPACE/kernel54
+          make ARCH=arm64 \
+            CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 \
+            OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 \
+            LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            M=drivers/input/misc/aw8697_haptic modules > aw.log 2>&1
+          echo "aw8697 exit=$?"
+          tail -20 aw.log
+
+      - name: Build cas_qcom
+        run: |
+          set +e
+          cd $GITHUB_WORKSPACE/kernel54
+          make ARCH=arm64 \
+            CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 \
+            OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 \
+            LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            M=drivers/power/supply/cas_qcom modules > cq.log 2>&1
+          echo "cas_qcom exit=$?"
+          tail -40 cq.log
+
+      - name: Summary
+        if: always()
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          {
+            echo "## cas 驱动批量编译"
+            echo ""
+            echo "### 产物 .ko"
+            echo '```'
+            find drivers -name "*.ko" 2>/dev/null
+            echo '```'
+            echo ""
+            echo "### aw8697 尾部"
+            echo '```'
+            tail -20 aw.log 2>/dev/null || echo "无 log"
+            echo '```'
+            echo ""
+            echo "### cas_qcom 错误"
+            echo '```'
+            grep -iE "error:|fatal error" cq.log 2>/dev/null | head -30 || echo "无错误"
+            echo '```'
+            echo ""
+            echo "### cas_qcom 尾部"
+            echo '```'
+            tail -40 cq.log 2>/dev/null || echo "无 log"
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cas-drivers-logs
+          path: |
+            kernel54/aw.log
+            kernel54/cq.log
+            kernel54/prep.log
+          retention-days: 30
