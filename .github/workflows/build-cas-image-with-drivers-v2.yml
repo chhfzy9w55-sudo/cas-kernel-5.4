@@ -39,8 +39,7 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential bc bison flex \
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
             libssl-dev libelf-dev device-tree-compiler \
             python3 python3-pip xz-utils \
             clang-14 lld-14 llvm-14 \
@@ -127,4 +126,153 @@ jobs:
           new = c54[:last_endif] + ins + c54[last_endif:]
           open('include/linux/power_supply.h', 'w').write(new)
           print(f"Inserted {len(diff)} vendor enum values before #endif")
-          PYE
+          PYEOF
+          echo "=== verify ==="
+          tail -8 include/linux/power_supply.h
+          grep -c "cas 4.19 vendor extensions" include/linux/power_supply.h
+
+      # ===== Step 6: Patch for 5.4 (uaccess + do_gettimeofday) =====
+      - name: Patch for 5.4
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          find drivers/input/misc/aw8697_haptic drivers/power/supply/cas_qcom \
+               -type f \( -name "*.c" -o -name "*.h" \) 2>/dev/null | while read f; do
+            grep -q "asm/uaccess.h" "$f" 2>/dev/null \
+              && sed -i 's|<asm/uaccess.h>|<linux/uaccess.h>|g' "$f"
+            if grep -q "do_gettimeofday" "$f" 2>/dev/null \
+               && ! grep -q "cas_compat_do_gettimeofday" "$f"; then
+              LAST=$(grep -n '^#include' "$f" | tail -1 | cut -d: -f1)
+              head -${LAST} "$f" > /tmp/p.c
+              echo '/* ==== cas_compat_do_gettimeofday: 5.4 compat ==== */' >> /tmp/p.c
+              echo '#include <linux/timekeeping.h>' >> /tmp/p.c
+              echo '#ifndef do_gettimeofday' >> /tmp/p.c
+              echo '#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' >> /tmp/p.c
+              echo '#endif' >> /tmp/p.c
+              tail -n +$((${LAST}+1)) "$f" >> /tmp/p.c
+              mv /tmp/p.c "$f"
+              echo "patched: $f"
+            fi
+          done
+
+      # ===== Step 7: Hook Kconfig/Makefile =====
+      - name: Hook Kconfig/Makefile
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          grep -q "aw8697_haptic" drivers/input/misc/Kconfig \
+            || echo 'source "drivers/input/misc/aw8697_haptic/Kconfig"' >> drivers/input/misc/Kconfig
+          grep -q "aw8697_haptic" drivers/input/misc/Makefile \
+            || echo 'obj-$(CONFIG_INPUT_AW8697_HAPTIC) += aw8697_haptic/' >> drivers/input/misc/Makefile
+          if [ -f drivers/power/supply/cas_qcom/Kconfig ]; then
+            grep -q "cas_qcom" drivers/power/supply/Kconfig \
+              || echo 'source "drivers/power/supply/cas_qcom/Kconfig"' >> drivers/power/supply/Kconfig
+            grep -q "cas_qcom" drivers/power/supply/Makefile \
+              || echo 'obj-y += cas_qcom/' >> drivers/power/supply/Makefile
+          fi
+          if [ -f drivers/power/supply/pmic-voter.c ]; then
+            grep -q "pmic-voter" drivers/power/supply/Makefile \
+              || echo 'obj-y += pmic-voter.o' >> drivers/power/supply/Makefile
+          fi
+          echo "--- drivers/input/misc/Kconfig tail ---"
+          tail -3 drivers/input/misc/Kconfig
+          echo "--- drivers/input/misc/Makefile tail ---"
+          tail -3 drivers/input/misc/Makefile
+          echo "--- drivers/power/supply/Kconfig tail ---"
+          tail -5 drivers/power/supply/Kconfig
+          echo "--- drivers/power/supply/Makefile tail ---"
+          tail -5 drivers/power/supply/Makefile
+
+      # ===== Step 8: Enable configs (=y 内建) =====
+      - name: Enable configs (=y)
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          {
+            echo 'CONFIG_INPUT_AW8697_HAPTIC=y'
+            echo 'CONFIG_QPNP_SMB5_CAS=y'
+            echo 'CONFIG_CHARGER_BQ25790=y'
+            echo 'CONFIG_FUEL_GAUGE_BQ28Z610=y'
+            echo 'CONFIG_CP_MAX77932=y'
+          } >> arch/arm64/configs/gki_defconfig
+          echo "--- gki_defconfig tail ---"
+          tail -10 arch/arm64/configs/gki_defconfig
+          make ARCH=arm64 gki_defconfig > /dev/null 2>&1
+          echo "--- 5 CONFIG status ---"
+          grep -E "^(CONFIG_INPUT_AW8697_HAPTIC|CONFIG_QPNP_SMB5_CAS|CONFIG_CHARGER_BQ25790|CONFIG_FUEL_GAUGE_BQ28Z610|CONFIG_CP_MAX77932)" .config
+
+      # ===== Step 9: Build Image =====
+      - name: Build Image
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          make ARCH=arm64 \
+            CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 \
+            OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 \
+            LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            -j$(nproc) Image > build.log 2>&1
+          RC=$?
+          echo "build rc=$RC"
+          echo "--- build.log tail ---"
+          tail -50 build.log
+          echo "--- Image check ---"
+          ls -la arch/arm64/boot/Image 2>&1
+          if [ ! -f arch/arm64/boot/Image ]; then
+            echo "!!! Image NOT built"
+            grep -iE "error:|fatal error" build.log | head -30
+            exit 1
+          fi
+          echo "=== Image built successfully ==="
+
+      # ===== Step 10: Package + Commit + Push =====
+      - name: Package + Commit + Push
+        if: always()
+        run: |
+          set +e
+          cd $GITHUB_WORKSPACE/kernel54
+          mkdir -p $GITHUB_WORKSPACE/artifacts
+          if [ -f arch/arm64/boot/Image ]; then
+            cp arch/arm64/boot/Image $GITHUB_WORKSPACE/artifacts/Image_cas_5.4_with_drivers
+            cp arch/arm64/boot/Image $GITHUB_WORKSPACE/Image_cas_5.4_with_drivers
+            ls -la $GITHUB_WORKSPACE/Image_cas_5.4_with_drivers
+          fi
+          [ -f build.log ] && cp build.log $GITHUB_WORKSPACE/artifacts/build.log
+          ls -la $GITHUB_WORKSPACE/artifacts/
+          if [ -f $GITHUB_WORKSPACE/Image_cas_5.4_with_drivers ] && [ "$PUSH" = "true" ]; then
+            cd $GITHUB_WORKSPACE
+            git config user.email "actions@github.com"
+            git config user.name "GitHub Actions"
+            git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git
+            git add Image_cas_5.4_with_drivers
+            git add artifacts/ 2>/dev/null || true
+            git commit -m "build: cas 5.4 Image with 4 drivers (aw8697+bq25790+bq28z610+max77932) [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
+            git push origin HEAD:${BRANCH} 2>&1 | tail -10
+            echo "--- push rc=$? ---"
+          else
+            echo "Skip commit/push (no Image or PUSH=$PUSH)"
+          fi
+
+      # ===== Step 11: Summary =====
+      - name: Summary
+        if: always()
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54 2>/dev/null || true
+          {
+            echo "## cas 5.4 Image build report"
+            echo ""
+            echo "### Image"
+            echo "\`\`\`"
+            ls -la $GITHUB_WORKSPACE/Image_cas_5.4_with_drivers 2>/dev/null || echo "no image"
+            echo "\`\`\`"
+            echo ""
+            echo "### CONFIG status"
+            echo "\`\`\`"
+            grep -E "^(CONFIG_INPUT_AW8697_HAPTIC|CONFIG_QPNP_SMB5_CAS|CONFIG_CHARGER_BQ25790|CONFIG_FUEL_GAUGE_BQ28Z610|CONFIG_CP_MAX77932)" .config 2>/dev/null
+            echo "\`\`\`"
+            echo ""
+            echo "### build.log errors"
+            echo "\`\`\`"
+            grep -iE "error:|fatal error" build.log 2>/dev/null | head -20
+            echo "\`\`\`"
+            echo ""
+            echo "### build.log tail"
+            echo "\`\`\`"
+            tail -30 build.log 2>/dev/null
+            echo "\`\`\`"
+          } >> $GITHUB_STEP_SUMMARY
