@@ -17,12 +17,29 @@ jobs:
             clang-14 lld-14 llvm-14 \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
-      - name: Clone 5.4 kernel
+      - name: Clone 5.4 kernel with retry
         run: |
           cd $GITHUB_WORKSPACE
-          git clone --depth=1 -b android11-5.4 \
-            https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
-            kernel54
+          for i in 1 2 3; do
+            echo "=== 尝试 $i/3 ==="
+            rm -rf kernel54
+            if git clone --depth=1 -b android11-5.4 \
+              https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
+              kernel54 2>&1 | tail -5; then
+              if [ -d kernel54/.git ]; then
+                echo "克隆成功"
+                break
+              fi
+            fi
+            sleep 30
+          done
+          if [ ! -d kernel54/.git ]; then
+            echo "=== 清华失败，用 GitHub 镜像 ==="
+            git clone --depth=1 -b android11-5.4 \
+              https://github.com/aosp-mirror/kernel_common.git \
+              kernel54
+          fi
+          ls kernel54/ | head -5
 
       - name: Fetch aw8697
         run: |
@@ -44,7 +61,6 @@ jobs:
           echo '#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' >> /tmp/new_aw.c
           tail -n +$((${LAST}+1)) aw8697.c >> /tmp/new_aw.c
           mv /tmp/new_aw.c aw8697.c
-          echo "=== patched head ==="
           head -35 aw8697.c
 
       - name: Hook Kconfig Makefile
@@ -71,6 +87,7 @@ jobs:
             LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
             prepare modules_prepare > prep.log 2>&1
           echo "prep exit=$?"
+          tail -5 prep.log
 
       - name: Build module
         run: |
