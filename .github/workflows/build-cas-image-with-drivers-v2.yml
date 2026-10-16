@@ -1,0 +1,130 @@
+name: build-cas-image-with-drivers-v2
+
+# =========================================================
+# cas 5.4 GKI 内核 + 4 驱动内建版
+# 目标：编译完整 Image，含 aw8697/bq25790/bq28z610/max77932 内建
+#
+# 参考：build-cas-drivers-batch.yml（已验证 4 驱动可编译为 .ko）
+# 关键改动：
+#   1. CONFIG_*=y（不是 =m，内建到内核）
+#   2. make Image（不是 modules）
+#   3. git commit + push Image 到仓库
+# =========================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: "5.4 kernel branch"
+        default: "android11-5.4"
+        type: string
+      push_image:
+        description: "编译成功后是否 push Image 到仓库"
+        default: "true"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      BRANCH: "${{ github.event.inputs.kernel_branch }}"
+      PUSH: "${{ github.event.inputs.push_image }}"
+
+    steps:
+      # ===== Step 1: Install deps =====
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex \
+            libssl-dev libelf-dev device-tree-compiler \
+            python3 python3-pip xz-utils \
+            clang-14 lld-14 llvm-14 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          clang-14 --version
+          gcc-aarch64-linux-gnu --version
+
+      # ===== Step 2: Clone 5.4 kernel (3 重试 + fallback) =====
+      - name: Clone 5.4 kernel
+        run: |
+          cd $GITHUB_WORKSPACE
+          for i in 1 2 3; do
+            echo "=== clone attempt $i (tsinghua) ==="
+            rm -rf kernel54
+            git clone --depth=1 -b "$BRANCH" \
+              https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
+              kernel54 2>&1 | tail -5
+            if [ -f kernel54/Makefile ]; then
+              echo "OK: tsinghua mirror"
+              break
+            fi
+            sleep 20
+          done
+          if [ ! -f kernel54/Makefile ]; then
+            echo "=== fallback: aosp-mirror ==="
+            git clone --depth=1 -b "$BRANCH" \
+              https://github.com/aosp-mirror/kernel_common.git kernel54
+          fi
+          head -3 kernel54/Makefile
+
+      # ===== Step 3: Fetch cas drivers =====
+      - name: Fetch cas drivers
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
+          API="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents"
+          for dir in \
+            "drivers/input/misc/aw8697_haptic" \
+            "drivers/power/supply/cas_qcom"; do
+            mkdir -p "$dir"
+            echo "=== fetching $dir ==="
+            curl -sL --max-time 30 "$API/$dir?ref=cas-q-oss" \
+              | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
+              curl -sL --max-time 60 -o "$dir/$f" "$BASE/$dir/$f" 2>/dev/null
+            done
+            ls -la "$dir"
+          done
+
+      # ===== Step 4: Fetch qcom headers =====
+      - name: Fetch qcom headers
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
+          mkdir -p include/linux drivers/power/supply
+          curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
+          curl -sL --max-time 60 -o drivers/power/supply/pmic-voter.c "$BASE/drivers/power/supply/pmic-voter.c" 2>/dev/null || true
+          ls -la include/linux/pmic-voter.h drivers/power/supply/pmic-voter.c 2>/dev/null
+
+      # ===== Step 5: Patch power_supply.h (217 vendor enum) =====
+      - name: Patch power_supply.h
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          curl -sL --max-time 60 -o /tmp/ps_cas.h \
+            "https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss/include/linux/power_supply.h"
+          python3 << 'PYEOF'
+          import re, sys
+          cas = open('/tmp/ps_cas.h').read()
+          c54 = open('include/linux/power_supply.h').read()
+          c54 = re.sub(r'\n*/\* cas 4\.19 vendor extensions \*/.*?\n\};\n?', '\n', c54, flags=re.DOTALL)
+          pat = r'POWER_SUPPLY_[A-Z_0-9]+'
+          cas_all = set(re.findall(pat, cas))
+          c54_all = set(re.findall(pat, c54))
+          diff = sorted(cas_all - c54_all)
+          print(f"cas enum: {len(cas_all)}")
+          print(f"5.4 enum: {len(c54_all)}")
+          print(f"diff to add: {len(diff)}")
+          last_endif = c54.rfind('#endif')
+          if last_endif < 0:
+              print("ERROR: no #endif"); sys.exit(1)
+          ins = '\n/* cas 4.19 vendor extensions */\nenum cas_vendor_power_supply_ext {\n'
+          for d in diff:
+              ins += '\t%s,\n' % d
+          ins += '};\n\n'
+          new = c54[:last_endif] + ins + c54[last_endif:]
+          open('include/linux/power_supply.h', 'w').write(new)
+          print(f"Inserted {len(diff)} vendor enum values before #endif")
+          PYE
