@@ -53,14 +53,70 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          
           mkdir -p include/linux
-          
           curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
-          ls -la include/linux/pmic-voter.h
-          
           curl -sL --max-time 60 -o drivers/power/supply/pmic-voter.c "$BASE/drivers/power/supply/pmic-voter.c" 2>/dev/null || true
-          ls -la drivers/power/supply/pmic-voter.c
+          ls -la include/linux/pmic-voter.h drivers/power/supply/pmic-voter.c
+
+      - name: Patch power_supply.h
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          
+          # 拉 cas 4.19 的 power_supply.h
+          curl -sL --max-time 60 -o /tmp/ps_cas.h \
+            "https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss/include/linux/power_supply.h"
+          
+          # 提取 cas 独有属性（不在 5.4 中的）
+          grep -oE "POWER_SUPPLY_PROP_[A-Z_0-9]+" /tmp/ps_cas.h | sort -u > /tmp/cas_props.txt
+          grep -oE "POWER_SUPPLY_PROP_[A-Z_0-9]+" include/linux/power_supply.h | sort -u > /tmp/54_props.txt
+          comm -23 /tmp/cas_props.txt /tmp/54_props.txt > /tmp/diff_props.txt
+          
+          echo "=== 需要追加的属性数量 ==="
+          wc -l /tmp/diff_props.txt
+          
+          # 用 python 精确处理
+          python3 << 'PYEOF'
+          with open('/tmp/diff_props.txt') as f:
+              props = [l.strip() for l in f if l.strip()]
+          
+          with open('include/linux/power_supply.h') as f:
+              content = f.read()
+          
+          # 找 cas 独有的自定义属性插入位置
+          # 5.4 里 enum power_supply_property 以 POWER_SUPPLY_PROP_* 结尾
+          # 找到这个 enum 的最后一个元素，在它后面追加
+          
+          # 简化策略：在 POWER_SUPPLY_PROP_SCOPE 后面追加
+          # 因为 SCOPE 通常接近 enum 尾部
+          marker = 'POWER_SUPPLY_PROP_SCOPE,'
+          if marker not in content:
+              # 找最后一个 POWER_SUPPLY_PROP_ 后面的 ,
+              import re
+              all_props = re.findall(r'POWER_SUPPLY_PROP_[A-Z_0-9]+', content)
+              marker = all_props[-1] + ','
+          
+          idx = content.find(marker)
+          if idx < 0:
+              print("ERROR: 找不到插入点")
+              exit(1)
+          
+          insert_pos = idx + len(marker)
+          
+          insertion = '\n\t/* cas 4.19 vendor extensions */\n'
+          for p in props:
+              insertion += f'\t{p},\n'
+          
+          new_content = content[:insert_pos] + insertion + content[insert_pos:]
+          
+          with open('include/linux/power_supply.h', 'w') as f:
+              f.write(new_content)
+          
+          print(f"已追加 {len(props)} 个属性到 {marker} 后面")
+          PYEOF
+          
+          echo "=== 验证 ==="
+          grep -c "POWER_SUPPLY_PROP_" include/linux/power_supply.h
+          grep "cas 4.19 vendor extensions" include/linux/power_supply.h
 
       - name: Patch for 5.4
         run: |
@@ -82,17 +138,14 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           
-          # aw8697
           echo 'source "drivers/input/misc/aw8697_haptic/Kconfig"' >> drivers/input/misc/Kconfig
           echo 'obj-$(CONFIG_INPUT_AW8697_HAPTIC) += aw8697_haptic/' >> drivers/input/misc/Makefile
           
-          # cas_qcom
           if [ -f drivers/power/supply/cas_qcom/Kconfig ]; then
             echo 'source "drivers/power/supply/cas_qcom/Kconfig"' >> drivers/power/supply/Kconfig
             echo 'obj-y += cas_qcom/' >> drivers/power/supply/Makefile
           fi
           
-          # pmic-voter 单独编译
           if [ -f drivers/power/supply/pmic-voter.c ]; then
             echo 'obj-y += pmic-voter.o' >> drivers/power/supply/Makefile
           fi
@@ -143,16 +196,16 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           {
-            echo "## cas 驱动批量编译"
+            echo "## cas 驱动批量编译（含 power_supply patch）"
             echo ""
             echo "### .ko 产物"
             echo '```'
             find drivers -name "*.ko" 2>/dev/null
             echo '```'
             echo ""
-            echo "### aw 尾部"
+            echo "### power_supply.h 追加结果"
             echo '```'
-            tail -10 aw.log 2>/dev/null
+            grep -A3 "cas 4.19 vendor extensions" include/linux/power_supply.h || echo "未找到标记"
             echo '```'
             echo ""
             echo "### cq 错误"
