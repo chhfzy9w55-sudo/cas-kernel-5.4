@@ -24,39 +24,23 @@ jobs:
             https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
             kernel54
 
-      - name: Fetch aw8697 from cas-q-oss
+      - name: Fetch aw8697
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           mkdir -p drivers/input/misc/aw8697_haptic
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss/drivers/input/misc/aw8697_haptic"
           for f in aw8697.c aw8697.h aw8697_reg.h aw8697_config.h Kconfig Makefile; do
-            echo "拉取 $f"
             curl -sL --max-time 60 -o "drivers/input/misc/aw8697_haptic/$f" "$BASE/$f" || true
           done
           ls -la drivers/input/misc/aw8697_haptic/
-          wc -l drivers/input/misc/aw8697_haptic/aw8697.c
 
-      - name: Hook into Kconfig/Makefile
+      - name: Hook Kconfig/Makefile
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          
-          if ! grep -q "aw8697_haptic" drivers/input/misc/Kconfig; then
+          grep -q "aw8697_haptic" drivers/input/misc/Kconfig || \
             echo 'source "drivers/input/misc/aw8697_haptic/Kconfig"' >> drivers/input/misc/Kconfig
-          fi
-          
-          if ! grep -q "aw8697_haptic" drivers/input/misc/Makefile; then
+          grep -q "aw8697_haptic" drivers/input/misc/Makefile || \
             echo 'obj-$(CONFIG_INPUT_AW8697_HAPTIC) += aw8697_haptic/' >> drivers/input/misc/Makefile
-          fi
-          
-          echo "=== Kconfig 尾部 ==="
-          tail -3 drivers/input/misc/Kconfig
-          echo ""
-          echo "=== Makefile 尾部 ==="
-          tail -3 drivers/input/misc/Makefile
-          
-          echo ""
-          echo "=== aw8697 自己的 Kconfig ==="
-          cat drivers/input/misc/aw8697_haptic/Kconfig
 
       - name: Enable config
         run: |
@@ -65,35 +49,30 @@ jobs:
           make ARCH=arm64 gki_defconfig > /dev/null 2>&1
           grep AW8697 .config
 
+      - name: Prepare kernel
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          make ARCH=arm64 \
+            CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 \
+            OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 \
+            LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            prepare modules_prepare > prep.log 2>&1
+          echo "prep exit=$?"
+          tail -10 prep.log
+
       - name: Build module
         run: |
           set +e
           cd $GITHUB_WORKSPACE/kernel54
           make ARCH=arm64 \
-            CC=clang-14 \
-            LD=ld.lld-14 \
-            AR=llvm-ar-14 \
-            NM=llvm-nm-14 \
-            OBJCOPY=llvm-objcopy-14 \
-            OBJDUMP=llvm-objdump-14 \
-            STRIP=llvm-strip-14 \
-            LLVM=1 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            M=drivers/input/misc/aw8697_haptic \
-            modules > build.log 2>&1
+            CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 \
+            OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 \
+            LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            M=drivers/input/misc/aw8697_haptic modules > build.log 2>&1
           RESULT=$?
           echo "exit=$RESULT"
           
           ERRORS=$(grep -iE "error:|fatal error|No such file|undefined" build.log | head -30)
-          
-          echo "===== ERROR SUMMARY ====="
-          echo "$ERRORS"
-          echo ""
-          echo "===== LAST 50 LINES ====="
-          tail -50 build.log
-          echo ""
-          echo "===== 产物 ====="
-          find . -name "aw8697*.ko" 2>/dev/null
           
           {
             echo "## aw8697 5.4 编译结果"
@@ -110,7 +89,7 @@ jobs:
             tail -50 build.log
             echo '```'
             echo ""
-            echo "### 编译产物"
+            echo "### 产物"
             echo '```'
             find . -name "aw8697*.ko" 2>/dev/null
             echo '```'
@@ -122,5 +101,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: aw8697-build-log
-          path: kernel54/build.log
+          path: |
+            kernel54/build.log
+            kernel54/prep.log
           retention-days: 30
