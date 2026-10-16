@@ -1,0 +1,137 @@
+name: build-cas-drivers-batch
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex \
+            libssl-dev libelf-dev device-tree-compiler \
+            python3 python3-pip xz-utils \
+            clang-14 lld-14 llvm-14 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Clone 5.4 kernel with retry
+        run: |
+          cd $GITHUB_WORKSPACE
+          for i in 1 2 3; do
+            echo "=== 尝试 $i/3 ==="
+            rm -rf kernel54
+            if git clone --depth=1 -b android11-5.4 \
+              https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
+              kernel54 2>&1 | tail -5; then
+              if [ -d kernel54/.git ]; then
+                echo "克隆成功"
+                break
+              fi
+            fi
+            sleep 30
+          done
+          if [ ! -d kernel54/.git ]; then
+            git clone --depth=1 -b android11-5.4 \
+              https://github.com/aosp-mirror/kernel_common.git \
+              kernel54
+          fi
+
+      - name: Fetch cas drivers
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
+          
+          # 批量拉取驱动目录
+          declare -a DIRS=(
+            "drivers/input/misc/aw8697_haptic"
+            "drivers/input/touchscreen/fts_521"
+            "drivers/input/touchscreen/st"
+            "drivers/input/touchscreen/xiaomi"
+            "drivers/power/supply/cas_qcom"
+            "drivers/power/supply/maxim"
+            "drivers/power/supply/ti"
+            "drivers/soc/qcom/icnss2"
+            "drivers/soc/qcom/memshare"
+            "drivers/soc/qcom/rmnet_ctl"
+          )
+          
+          for dir in "${DIRS[@]}"; do
+            echo "=== 拉取 $dir ==="
+            mkdir -p "$dir"
+            
+            # 先通过 API 列目录
+            API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$dir?ref=cas-q-oss"
+            FILES=$(curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}')
+            
+            if [ -z "$FILES" ]; then
+              echo "  目录不存在或为空: $dir"
+              rmdir "$dir" 2>/dev/null
+              continue
+            fi
+            
+            for f in $FILES; do
+              curl -sL --max-time 60 -o "$dir/$f" "$BASE/$dir/$f" 2>/dev/null
+            done
+            
+            ls -la "$dir/" | head -10
+          done
+
+      - name: Report fetched drivers
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          echo "=== 拉取统计 ==="
+          for d in drivers/input/misc/aw8697_haptic \
+                   drivers/input/touchscreen/fts_521 \
+                   drivers/power/supply/cas_qcom \
+                   drivers/soc/qcom/icnss2; do
+            if [ -d "$d" ]; then
+              COUNT=$(ls "$d" | wc -l)
+              SIZE=$(du -sh "$d" | awk '{print $1}')
+              echo "$d: $COUNT files, $SIZE"
+            fi
+          done
+
+      - name: Patch for 5.4
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          
+          # 批量 patch：do_gettimeofday + asm/uaccess.h
+          find drivers/input/misc/aw8697_haptic \
+               drivers/input/touchscreen \
+               drivers/power/supply \
+               drivers/soc/qcom \
+               -name "*.c" -o -name "*.h" 2>/dev/null | while read f; do
+            if grep -q "do_gettimeofday\|asm/uaccess.h" "$f" 2>/dev/null; then
+              echo "patch: $f"
+              sed -i 's|<asm/uaccess.h>|<linux/uaccess.h>|g' "$f"
+              
+              # do_gettimeofday patch
+              if grep -q "do_gettimeofday" "$f"; then
+                LAST=$(grep -n "^#include" "$f" | tail -1 | cut -d: -f1)
+                head -${LAST} "$f" > /tmp/patched.c
+                echo '#include <linux/timekeeping.h>' >> /tmp/patched.c
+                echo '#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' >> /tmp/patched.c
+                tail -n +$((${LAST}+1)) "$f" >> /tmp/patched.c
+                mv /tmp/patched.c "$f"
+              fi
+            fi
+          done
+          
+          echo "patch 完成"
+
+      - name: Hook Kconfig Makefile
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          # 只接入关键几个
+          for entry in "drivers/input/misc/aw8697_haptic:Kconfig:Makefile" \
+                       "drivers/power/supply/cas_qcom:Kconfig:Makefile"; do
+            IFS=: read dir k m <<< "$entry"
+            if [ -f "$dir/$k" ]; then
+              parent=$(dirname "$dir")
+              grep -q "$(basename $dir)" "$parent/Kconfig" || \
+                echo "source \"$dir/Kconfig\"" >> "$parent/Kconfig"
+              grep -q "$(basename $dir)" "$parent/Makefile" || \
+                echo "obj-\$(CONFIG_$(echo $(basename $dir) 
