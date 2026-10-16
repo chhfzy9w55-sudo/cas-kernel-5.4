@@ -38,7 +38,6 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          
           for dir in \
             "drivers/input/misc/aw8697_haptic" \
             "drivers/power/supply/cas_qcom"; do
@@ -49,74 +48,77 @@ jobs:
             done
           done
 
-      - name: Fetch qcom private headers
+      - name: Fetch qcom headers
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           mkdir -p include/linux
           curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
           curl -sL --max-time 60 -o drivers/power/supply/pmic-voter.c "$BASE/drivers/power/supply/pmic-voter.c" 2>/dev/null || true
-          ls -la include/linux/pmic-voter.h drivers/power/supply/pmic-voter.c
 
-      - name: Patch power_supply.h
+      - name: Patch power_supply.h PROP and TYPE
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           
-          # 拉 cas 4.19 的 power_supply.h
           curl -sL --max-time 60 -o /tmp/ps_cas.h \
             "https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss/include/linux/power_supply.h"
           
-          # 提取 cas 独有属性（不在 5.4 中的）
-          grep -oE "POWER_SUPPLY_PROP_[A-Z_0-9]+" /tmp/ps_cas.h | sort -u > /tmp/cas_props.txt
-          grep -oE "POWER_SUPPLY_PROP_[A-Z_0-9]+" include/linux/power_supply.h | sort -u > /tmp/54_props.txt
-          comm -23 /tmp/cas_props.txt /tmp/54_props.txt > /tmp/diff_props.txt
-          
-          echo "=== 需要追加的属性数量 ==="
-          wc -l /tmp/diff_props.txt
-          
-          # 用 python 精确处理
           python3 << 'PYEOF'
-          with open('/tmp/diff_props.txt') as f:
-              props = [l.strip() for l in f if l.strip()]
+          import re
+          
+          with open('/tmp/ps_cas.h') as f:
+              cas = f.read()
           
           with open('include/linux/power_supply.h') as f:
-              content = f.read()
+              c54 = f.read()
           
-          # 找 cas 独有的自定义属性插入位置
-          # 5.4 里 enum power_supply_property 以 POWER_SUPPLY_PROP_* 结尾
-          # 找到这个 enum 的最后一个元素，在它后面追加
+          def extract(text, prefix):
+              return set(re.findall(prefix + r'[A-Z_0-9]+', text))
           
-          # 简化策略：在 POWER_SUPPLY_PROP_SCOPE 后面追加
-          # 因为 SCOPE 通常接近 enum 尾部
-          marker = 'POWER_SUPPLY_PROP_SCOPE,'
-          if marker not in content:
-              # 找最后一个 POWER_SUPPLY_PROP_ 后面的 ,
-              import re
-              all_props = re.findall(r'POWER_SUPPLY_PROP_[A-Z_0-9]+', content)
-              marker = all_props[-1] + ','
+          # 1. PROP 枚举
+          props_cas = extract(cas, 'POWER_SUPPLY_PROP_')
+          props_54 = extract(c54, 'POWER_SUPPLY_PROP_')
+          props_diff = sorted(props_cas - props_54)
           
-          idx = content.find(marker)
-          if idx < 0:
-              print("ERROR: 找不到插入点")
-              exit(1)
+          # 2. TYPE 枚举
+          types_cas = extract(cas, 'POWER_SUPPLY_TYPE_')
+          types_54 = extract(c54, 'POWER_SUPPLY_TYPE_')
+          types_diff = sorted(types_cas - types_54)
           
-          insert_pos = idx + len(marker)
+          print(f"PROP 差集: {len(props_diff)}")
+          print(f"TYPE 差集: {len(types_diff)}")
+          print(f"TYPE: {types_diff}")
           
-          insertion = '\n\t/* cas 4.19 vendor extensions */\n'
-          for p in props:
-              insertion += f'\t{p},\n'
+          # 3. 处理 PROP - 在 POWER_SUPPLY_PROP_SCOPE 后面追加
+          marker_prop = 'POWER_SUPPLY_PROP_SCOPE,'
+          if marker_prop in c54 and props_diff:
+              idx = c54.find(marker_prop) + len(marker_prop)
+              insertion = '\n\t/* cas 4.19 vendor PROP extensions */\n'
+              for p in props_diff:
+                  insertion += f'\t{p},\n'
+              c54 = c54[:idx] + insertion + c54[idx:]
+              print(f"PROP 追加成功: {len(props_diff)} 个")
           
-          new_content = content[:insert_pos] + insertion + content[insert_pos:]
+          # 4. 处理 TYPE - 找 enum power_supply_type 里的最后一个枚举
+          # 5.4 的最后一个 TYPE 通常是 POWER_SUPPLY_TYPE_APPLE_BRICK_ID 或类似
+          type_matches = list(re.finditer(r'(POWER_SUPPLY_TYPE_[A-Z_0-9]+),', c54))
+          if type_matches and types_diff:
+              last = type_matches[-1]
+              idx = last.end()
+              insertion = '\n\t/* cas 4.19 vendor TYPE extensions */\n'
+              for t in types_diff:
+                  insertion += f'\t{t},\n'
+              c54 = c54[:idx] + insertion + c54[idx:]
+              print(f"TYPE 追加成功: {len(types_diff)} 个")
           
           with open('include/linux/power_supply.h', 'w') as f:
-              f.write(new_content)
-          
-          print(f"已追加 {len(props)} 个属性到 {marker} 后面")
+              f.write(c54)
           PYEOF
           
           echo "=== 验证 ==="
-          grep -c "POWER_SUPPLY_PROP_" include/linux/power_supply.h
-          grep "cas 4.19 vendor extensions" include/linux/power_supply.h
+          grep -A2 "cas 4.19 vendor PROP" include/linux/power_supply.h | head -3
+          grep -A2 "cas 4.19 vendor TYPE" include/linux/power_supply.h | head -5
+          grep "POWER_SUPPLY_TYPE_BMS" include/linux/power_supply.h
 
       - name: Patch for 5.4
         run: |
@@ -137,18 +139,13 @@ jobs:
       - name: Hook Kconfig Makefile
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          
           echo 'source "drivers/input/misc/aw8697_haptic/Kconfig"' >> drivers/input/misc/Kconfig
           echo 'obj-$(CONFIG_INPUT_AW8697_HAPTIC) += aw8697_haptic/' >> drivers/input/misc/Makefile
-          
           if [ -f drivers/power/supply/cas_qcom/Kconfig ]; then
             echo 'source "drivers/power/supply/cas_qcom/Kconfig"' >> drivers/power/supply/Kconfig
             echo 'obj-y += cas_qcom/' >> drivers/power/supply/Makefile
           fi
-          
-          if [ -f drivers/power/supply/pmic-voter.c ]; then
-            echo 'obj-y += pmic-voter.o' >> drivers/power/supply/Makefile
-          fi
+          [ -f drivers/power/supply/pmic-voter.c ] && echo 'obj-y += pmic-voter.o' >> drivers/power/supply/Makefile
 
       - name: Enable configs
         run: |
@@ -179,7 +176,6 @@ jobs:
             OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 \
             LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
             M=drivers/input/misc/aw8697_haptic modules > aw.log 2>&1
-          echo "aw exit=$?"
 
       - name: Build cas_qcom
         run: |
@@ -189,23 +185,17 @@ jobs:
             OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 \
             LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
             M=drivers/power/supply/cas_qcom modules > cq.log 2>&1
-          echo "cq exit=$?"
 
       - name: Summary
         if: always()
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           {
-            echo "## cas 驱动批量编译（含 power_supply patch）"
+            echo "## cas 驱动批量编译（PROP + TYPE patch）"
             echo ""
             echo "### .ko 产物"
             echo '```'
             find drivers -name "*.ko" 2>/dev/null
-            echo '```'
-            echo ""
-            echo "### power_supply.h 追加结果"
-            echo '```'
-            grep -A3 "cas 4.19 vendor extensions" include/linux/power_supply.h || echo "未找到标记"
             echo '```'
             echo ""
             echo "### cq 错误"
