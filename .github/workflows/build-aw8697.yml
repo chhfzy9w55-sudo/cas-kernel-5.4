@@ -34,7 +34,20 @@ jobs:
           done
           ls -la drivers/input/misc/aw8697_haptic/
 
-      - name: Hook Kconfig/Makefile
+      - name: Patch aw8697 for 5.4
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54/drivers/input/misc/aw8697_haptic
+          LAST=$(grep -n "^#include" aw8697.c | tail -1 | cut -d: -f1)
+          echo "last include at line $LAST"
+          head -${LAST} aw8697.c > /tmp/new_aw.c
+          echo '#include <linux/timekeeping.h>' >> /tmp/new_aw.c
+          echo '#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' >> /tmp/new_aw.c
+          tail -n +$((${LAST}+1)) aw8697.c >> /tmp/new_aw.c
+          mv /tmp/new_aw.c aw8697.c
+          echo "=== patched head ==="
+          head -35 aw8697.c
+
+      - name: Hook Kconfig Makefile
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           grep -q "aw8697_haptic" drivers/input/misc/Kconfig || \
@@ -58,7 +71,6 @@ jobs:
             LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
             prepare modules_prepare > prep.log 2>&1
           echo "prep exit=$?"
-          tail -10 prep.log
 
       - name: Build module
         run: |
@@ -71,9 +83,7 @@ jobs:
             M=drivers/input/misc/aw8697_haptic modules > build.log 2>&1
           RESULT=$?
           echo "exit=$RESULT"
-          
-          ERRORS=$(grep -iE "error:|fatal error|No such file|undefined" build.log | head -30)
-          
+          ERRORS=$(grep -iE "error:|fatal error" build.log | head -30)
           {
             echo "## aw8697 5.4 编译结果"
             echo ""
@@ -84,9 +94,9 @@ jobs:
             echo "$ERRORS"
             echo '```'
             echo ""
-            echo "### LAST 50 LINES"
+            echo "### LAST 60 LINES"
             echo '```'
-            tail -50 build.log
+            tail -60 build.log
             echo '```'
             echo ""
             echo "### 产物"
