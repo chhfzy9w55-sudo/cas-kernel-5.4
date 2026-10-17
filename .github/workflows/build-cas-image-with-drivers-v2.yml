@@ -22,7 +22,6 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE
           for i in 1 2 3; do
-            echo "=== try $i/3 ==="
             rm -rf kernel54
             if git clone --depth=1 -b android11-5.4 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git kernel54 2>&1 | tail -3; then
               if [ -d kernel54/.git ]; then break; fi
@@ -49,12 +48,9 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          
-          # 1. 拉 pmic-voter.h
           mkdir -p include/linux
           curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
           
-          # 2. 拉 pmic-voter.c（尝试多个路径）
           for p in "drivers/power/supply/qcom/pmic-voter.c" "drivers/power/supply/pmic-voter.c"; do
             curl -sL --max-time 60 -o /tmp/pv.c "$BASE/$p" 2>/dev/null
             if [ -s /tmp/pv.c ] && ! head -c 10 /tmp/pv.c | grep -q "404"; then
@@ -63,12 +59,18 @@ jobs:
               break
             fi
           done
-          ls -la drivers/power/supply/pmic-voter.c 2>/dev/null || echo "pmic-voter.c not found"
 
       - name: Patch power_supply.h
         run: |
           cd $GITHUB_WORKSPACE/kernel54
+          BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           curl -sL --max-time 60 -o /tmp/ps_cas.h "$BASE/include/linux/power_supply.h" 2>/dev/null || true
+          
+          if [ ! -s /tmp/ps_cas.h ]; then
+            echo "ERROR: failed to download power_supply.h"
+            exit 1
+          fi
+          
           python3 << 'PYEOF'
           import re
           with open('/tmp/ps_cas.h') as f:
@@ -86,6 +88,7 @@ jobs:
           new_content = c54[:last_endif] + insertion + c54[last_endif:]
           with open('include/linux/power_supply.h', 'w') as f:
               f.write(new_content)
+          print(f"Patch applied, found {len(diff)} props")
           PYEOF
 
       - name: Patch for 5.4
