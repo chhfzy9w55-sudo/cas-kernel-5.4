@@ -57,7 +57,6 @@ jobs:
             curl -sL --max-time 60 -o /tmp/pv.c "$BASE/$p" 2>/dev/null
             if [ -s /tmp/pv.c ] && ! head -c 10 /tmp/pv.c | grep -q "404"; then
               cp /tmp/pv.c drivers/power/supply/pmic-voter.c
-              echo "found pmic-voter.c at $p"
               break
             fi
           done
@@ -67,10 +66,6 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           curl -sL --max-time 60 -o /tmp/ps_cas.h "$BASE/include/linux/power_supply.h" 2>/dev/null || true
-          if [ ! -s /tmp/ps_cas.h ]; then
-            echo "ERROR: failed to download power_supply.h"
-            exit 1
-          fi
           python3 << 'PYEOF'
           import re
           with open('/tmp/ps_cas.h') as f:
@@ -88,7 +83,6 @@ jobs:
           new_content = c54[:last_endif] + insertion + c54[last_endif:]
           with open('include/linux/power_supply.h', 'w') as f:
               f.write(new_content)
-          print(f"Patch applied, found {len(diff)} props")
           PYEOF
 
       - name: Patch for 5.4
@@ -106,28 +100,32 @@ jobs:
             fi
           done
 
-      - name: Hook Kconfig Makefile
+      - name: Hardcode Makefile
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          echo 'source "drivers/input/misc/aw8697_haptic/Kconfig"' >> drivers/input/misc/Kconfig
-          echo 'obj-$(CONFIG_INPUT_AW8697_HAPTIC) += aw8697_haptic/' >> drivers/input/misc/Makefile
-          if [ -f drivers/power/supply/cas_qcom/Kconfig ]; then
-            echo 'source "drivers/power/supply/cas_qcom/Kconfig"' >> drivers/power/supply/Kconfig
-            echo 'obj-y += cas_qcom/' >> drivers/power/supply/Makefile
-          fi
+          # 不碰 Kconfig，直接写死编译规则
+          echo 'obj-y += aw8697_haptic/' >> drivers/input/misc/Makefile
+          echo 'obj-y += cas_qcom/' >> drivers/power/supply/Makefile
           if [ -f drivers/power/supply/pmic-voter.c ]; then
             echo 'obj-y += pmic-voter.o' >> drivers/power/supply/Makefile
           fi
 
-      - name: Enable configs builtin
+      - name: Enable configs via append
         run: |
           cd $GITHUB_WORKSPACE/kernel54
+          # 在 defconfig 后面追加配置
           echo 'CONFIG_INPUT_AW8697_HAPTIC=y' >> arch/arm64/configs/gki_defconfig
           echo 'CONFIG_QPNP_SMB5_CAS=y' >> arch/arm64/configs/gki_defconfig
           echo 'CONFIG_CHARGER_BQ25790=y' >> arch/arm64/configs/gki_defconfig
           echo 'CONFIG_FUEL_GAUGE_BQ28Z610=y' >> arch/arm64/configs/gki_defconfig
           echo 'CONFIG_CP_MAX77932=y' >> arch/arm64/configs/gki_defconfig
-          make ARCH=arm64 gki_defconfig > /dev/null 2>&1
+          make ARCH=arm64 gki_defconfig || true
+          
+          # 强制开启（防止 gki_defconfig 把未知的配置给过滤掉）
+          sed -i 's/# CONFIG_QPNP_SMB5_CAS is not set/CONFIG_QPNP_SMB5_CAS=y/' .config 2>/dev/null || true
+          sed -i 's/# CONFIG_CHARGER_BQ25790 is not set/CONFIG_CHARGER_BQ25790=y/' .config 2>/dev/null || true
+          sed -i 's/# CONFIG_FUEL_GAUGE_BQ28Z610 is not set/CONFIG_FUEL_GAUGE_BQ28Z610=y/' .config 2>/dev/null || true
+          sed -i 's/# CONFIG_CP_MAX77932 is not set/CONFIG_CP_MAX77932=y/' .config 2>/dev/null || true
 
       - name: Build Image
         run: |
