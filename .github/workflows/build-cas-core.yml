@@ -107,10 +107,22 @@ jobs:
           make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j4 Image > build.log 2>&1
           
           if [ $? -ne 0 ]; then
-            echo "=== 编译失败，提取最后 50 行日志 ==="
-            tail -n 50 build.log
+            echo "=== 编译失败，提取真正的 Error ==="
+            grep -i -n "error:" build.log | head -30
+            echo ""
+            echo "=== 上下文 ==="
+            grep -i -B 3 -A 5 "error:" build.log | head -80
             exit 1
           fi
+
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-error-log
+          path: kernel54/build.log
+          retention-days: 7
 
       - name: Upload Image
         uses: actions/upload-artifact@v4
