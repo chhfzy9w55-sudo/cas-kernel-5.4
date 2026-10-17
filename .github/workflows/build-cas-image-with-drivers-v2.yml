@@ -16,9 +16,6 @@ jobs:
           sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils
           sudo apt-get install -y clang-14 lld-14 llvm-14
           sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "=== 验证 ==="
-          which clang-14 || true
-          which aarch64-linux-gnu-gcc || true
           echo "deps done"
 
       - name: Clone 5.4 kernel with retry
@@ -61,8 +58,15 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           mkdir -p include/linux
+          
+          # 拉取 pmic-voter.h
           curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
-          curl -sL --max-time 60 -o drivers/power/supply/pmic-voter.c "$BASE/drivers/power/supply/pmic-voter.c" 2>/dev/null || true
+          # 校验是否 404
+          if [ -f include/linux/pmic-voter.h ] && head -1 include/linux/pmic-voter.h | grep -q "404"; then
+            echo "pmic-voter.h 404, removing"
+            rm -f include/linux/pmic-voter.h
+          fi
+          ls -la include/linux/pmic-voter.h 2>/dev/null || echo "no pmic-voter.h"
 
       - name: Patch power_supply.h
         run: |
@@ -77,7 +81,6 @@ jobs:
           c54 = re.sub(r'\n*/\* cas 4\.19 vendor extensions \*/.*?\n\};\n?', '\n', c54, flags=re.DOTALL)
           pat = r'POWER_SUPPLY_[A-Z_0-9]+'
           diff = sorted(set(re.findall(pat, cas)) - set(re.findall(pat, c54)))
-          print(f"diff: {len(diff)}")
           last_endif = c54.rfind('#endif')
           insertion = '\n/* cas 4.19 vendor extensions */\nenum cas_vendor_power_supply_ext {\n'
           for d in diff:
@@ -86,7 +89,7 @@ jobs:
           new_content = c54[:last_endif] + insertion + c54[last_endif:]
           with open('include/linux/power_supply.h', 'w') as f:
               f.write(new_content)
-          print("inserted")
+          print(f"inserted {len(diff)} props")
           PYEOF
 
       - name: Patch for 5.4
@@ -109,13 +112,12 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel54
           echo 'source "drivers/input/misc/aw8697_haptic/Kconfig"' >> drivers/input/misc/Kconfig
           echo 'obj-$(CONFIG_INPUT_AW8697_HAPTIC) += aw8697_haptic/' >> drivers/input/misc/Makefile
+          
           if [ -f drivers/power/supply/cas_qcom/Kconfig ]; then
             echo 'source "drivers/power/supply/cas_qcom/Kconfig"' >> drivers/power/supply/Kconfig
             echo 'obj-y += cas_qcom/' >> drivers/power/supply/Makefile
           fi
-          if [ -f drivers/power/supply/pmic-voter.c ]; then
-            echo 'obj-y += pmic-voter.o' >> drivers/power/supply/Makefile
-          fi
+          # 注意：这里不再加 pmic-voter.o
 
       - name: Enable configs builtin
         run: |
