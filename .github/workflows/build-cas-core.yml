@@ -102,6 +102,7 @@ jobs:
           echo 'CONFIG_SCSI=y' >> .config
           echo 'CONFIG_SCSI_UFSHCD=y' >> .config
           echo 'CONFIG_PINCTRL_SM8250=y' >> .config
+          echo '# CONFIG_HID_PLAYSTATION is not set' >> .config
           make ARCH=arm64 olddefconfig
           
           make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j4 Image > build.log 2>&1
