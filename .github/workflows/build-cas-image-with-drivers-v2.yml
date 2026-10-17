@@ -25,17 +25,13 @@ jobs:
             echo "=== try $i/3 ==="
             rm -rf kernel54
             if git clone --depth=1 -b android11-5.4 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git kernel54 2>&1 | tail -3; then
-              if [ -d kernel54/.git ]; then
-                echo "cloned"
-                break
-              fi
+              if [ -d kernel54/.git ]; then break; fi
             fi
             sleep 30
           done
           if [ ! -d kernel54/.git ]; then
             git clone --depth=1 -b android11-5.4 https://github.com/aosp-mirror/kernel_common.git kernel54
           fi
-          ls kernel54/ | head -5
 
       - name: Fetch cas drivers
         run: |
@@ -48,30 +44,31 @@ jobs:
               curl -sL --max-time 60 -o "$dir/$f" "$BASE/$dir/$f" 2>/dev/null
             done
           done
-          echo "=== aw8697 ==="
-          ls drivers/input/misc/aw8697_haptic/ | head -10
-          echo "=== cas_qcom ==="
-          ls drivers/power/supply/cas_qcom/ | head -20
 
-      - name: Fetch qcom headers
+      - name: Fetch pmic-voter and headers
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          mkdir -p include/linux
           
-          # 拉取 pmic-voter.h
+          # 1. 拉 pmic-voter.h
+          mkdir -p include/linux
           curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
-          # 校验是否 404
-          if [ -f include/linux/pmic-voter.h ] && head -1 include/linux/pmic-voter.h | grep -q "404"; then
-            echo "pmic-voter.h 404, removing"
-            rm -f include/linux/pmic-voter.h
-          fi
-          ls -la include/linux/pmic-voter.h 2>/dev/null || echo "no pmic-voter.h"
+          
+          # 2. 拉 pmic-voter.c（尝试多个路径）
+          for p in "drivers/power/supply/qcom/pmic-voter.c" "drivers/power/supply/pmic-voter.c"; do
+            curl -sL --max-time 60 -o /tmp/pv.c "$BASE/$p" 2>/dev/null
+            if [ -s /tmp/pv.c ] && ! head -c 10 /tmp/pv.c | grep -q "404"; then
+              cp /tmp/pv.c drivers/power/supply/pmic-voter.c
+              echo "found pmic-voter.c at $p"
+              break
+            fi
+          done
+          ls -la drivers/power/supply/pmic-voter.c 2>/dev/null || echo "pmic-voter.c not found"
 
       - name: Patch power_supply.h
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          curl -sL --max-time 60 -o /tmp/ps_cas.h "https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss/include/linux/power_supply.h"
+          curl -sL --max-time 60 -o /tmp/ps_cas.h "$BASE/include/linux/power_supply.h" 2>/dev/null || true
           python3 << 'PYEOF'
           import re
           with open('/tmp/ps_cas.h') as f:
@@ -89,7 +86,6 @@ jobs:
           new_content = c54[:last_endif] + insertion + c54[last_endif:]
           with open('include/linux/power_supply.h', 'w') as f:
               f.write(new_content)
-          print(f"inserted {len(diff)} props")
           PYEOF
 
       - name: Patch for 5.4
@@ -112,12 +108,13 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel54
           echo 'source "drivers/input/misc/aw8697_haptic/Kconfig"' >> drivers/input/misc/Kconfig
           echo 'obj-$(CONFIG_INPUT_AW8697_HAPTIC) += aw8697_haptic/' >> drivers/input/misc/Makefile
-          
           if [ -f drivers/power/supply/cas_qcom/Kconfig ]; then
             echo 'source "drivers/power/supply/cas_qcom/Kconfig"' >> drivers/power/supply/Kconfig
             echo 'obj-y += cas_qcom/' >> drivers/power/supply/Makefile
           fi
-          # 注意：这里不再加 pmic-voter.o
+          if [ -f drivers/power/supply/pmic-voter.c ]; then
+            echo 'obj-y += pmic-voter.o' >> drivers/power/supply/Makefile
+          fi
 
       - name: Enable configs builtin
         run: |
@@ -128,7 +125,6 @@ jobs:
           echo 'CONFIG_FUEL_GAUGE_BQ28Z610=y' >> arch/arm64/configs/gki_defconfig
           echo 'CONFIG_CP_MAX77932=y' >> arch/arm64/configs/gki_defconfig
           make ARCH=arm64 gki_defconfig > /dev/null 2>&1
-          grep -E "AW8697|SMB5_CAS|BQ25790|BQ28Z610|MAX77932" .config || true
 
       - name: Build Image
         run: |
@@ -137,8 +133,7 @@ jobs:
           make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image > build.log 2>&1
           RESULT=$?
           echo "build exit=$RESULT"
-          ls -la arch/arm64/boot/Image 2>/dev/null
-          ERRORS=$(grep -iE "error:|fatal error" build.log | head -30)
+          ERRORS=$(grep -iE "error:|fatal error|undefined symbol" build.log | head -30)
           {
             echo "## cas 5.4 Image build report"
             echo ""
@@ -153,11 +148,6 @@ jobs:
             echo '```'
             ls -la arch/arm64/boot/Image 2>/dev/null || echo "no image"
             echo '```'
-            echo ""
-            echo "### last 40 lines"
-            echo '```'
-            tail -40 build.log
-            echo '```'
           } >> $GITHUB_STEP_SUMMARY
           exit 0
 
@@ -167,7 +157,6 @@ jobs:
           cd $GITHUB_WORKSPACE
           if [ -f kernel54/arch/arm64/boot/Image ]; then
             cp kernel54/arch/arm64/boot/Image ./Image_cas_5.4_with_drivers
-            ls -la Image_cas_5.4_with_drivers
             git config user.name "github-actions"
             git config user.email "actions@github.com"
             git add Image_cas_5.4_with_drivers
