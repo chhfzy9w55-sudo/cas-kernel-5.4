@@ -71,23 +71,20 @@ jobs:
       - name: Patch 4.19 peripherals
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          python3 << 'PYEOF'
-          import os
-          for root, dirs, files in os.walk('port_4_19'):
-              for file in files:
-                  if not (file.endswith('.c') or file.endswith('.h')): continue
-                  fpath = os.path.join(root, file)
-                  with open(fpath, 'r', errors='ignore') as f: content = f.read()
-                  modified = False
-                  if 'asm/uaccess.h' in content:
-                      content = content.replace('asm/uaccess.h', 'linux/uaccess.h')
-                      modified = True
-                  if 'do_gettimeofday' in content:
-                      content = '#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)\n' + content
-                      modified = True
-                  if modified:
-                      with open(fpath, 'w') as f: f.write(content)
-          PYEOF
+          
+          # 暴力修复 wakeup_source_register 签名（直接对文件执行 sed 替换）
+          find port_4_19 -name "*.c" -exec sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' {} \;
+          
+          # 修复 asm/uaccess.h
+          find port_4_19 -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} \;
+          
+          # 强行在文件头部注入 do_gettimeofday 的宏
+          for file in $(find port_4_19 -name "*.c"); do
+            if grep -q "do_gettimeofday" "$file"; then
+              sed -i '1i #include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' "$file"
+            fi
+          done
+          echo "Patches applied via bash sed."
 
       - name: HARDCODE Makefiles
         run: |
