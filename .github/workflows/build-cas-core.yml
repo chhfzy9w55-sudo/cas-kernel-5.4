@@ -81,7 +81,7 @@ jobs:
           # 强行在文件头部注入 do_gettimeofday 的宏
           for file in $(find port_4_19 -name "*.c"); do
             if grep -q "do_gettimeofday" "$file"; then
-              sed -i '1i #include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' "$file"
+              sed -i '1i #include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' "$file"
             fi
           done
           echo "Patches applied via bash sed."
