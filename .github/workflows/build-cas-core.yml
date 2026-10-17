@@ -1,0 +1,129 @@
+name: build-cas-core
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils
+          sudo apt-get install -y clang-14 lld-14 llvm-14
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Clone 5.4 kernel
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth=1 -b android11-5.4 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git kernel54
+
+      - name: Clone 5.10 kernel
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth=1 --filter=blob:none --sparse -b v5.10 https://github.com/torvalds/linux.git linux510
+          cd linux510
+          git sparse-checkout set drivers/scsi/ufs drivers/clk/qcom drivers/interconnect/qcom drivers/pinctrl/qcom include/dt-bindings
+
+      - name: Overlay 5.10 core into 5.4
+        run: |
+          cd $GITHUB_WORKSPACE
+          cp -rvf linux510/drivers/scsi/ufs/* kernel54/drivers/scsi/ufs/
+          cp -rvf linux510/drivers/clk/qcom/* kernel54/drivers/clk/qcom/
+          cp -rvf linux510/drivers/interconnect/qcom/* kernel54/drivers/interconnect/qcom/
+          cp -rvf linux510/drivers/pinctrl/qcom/* kernel54/drivers/pinctrl/qcom/
+          cp -rvf linux510/include/dt-bindings/* kernel54/include/dt-bindings/
+
+      - name: Fetch 4.19 peripherals
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
+          for dir in "drivers/input/misc/aw8697_haptic:aw8697_haptic" "drivers/power/supply/cas_qcom:cas_qcom"; do
+            SRC=$(echo $dir | cut -d: -f1)
+            DEST="port_4_19/$(echo $dir | cut -d: -f2)"
+            mkdir -p "$DEST"
+            API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$SRC?ref=cas-q-oss"
+            curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
+              curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
+            done
+          done
+
+      - name: Patch 4.19 peripherals
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          python3 << 'PYEOF'
+          import os
+          for root, dirs, files in os.walk('port_4_19'):
+              for file in files:
+                  if not (file.endswith('.c') or file.endswith('.h')): continue
+                  fpath = os.path.join(root, file)
+                  with open(fpath, 'r', errors='ignore') as f: content = f.read()
+                  modified = False
+                  if 'asm/uaccess.h' in content:
+                      content = content.replace('asm/uaccess.h', 'linux/uaccess.h')
+                      modified = True
+                  if 'do_gettimeofday' in content:
+                      content = '#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)\n' + content
+                      modified = True
+                  if modified:
+                      with open(fpath, 'w') as f: f.write(content)
+          PYEOF
+
+      - name: HARDCODE Makefiles
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          echo 'obj-y += aw8697_haptic/' > port_4_19/Makefile
+          echo 'obj-y += cas_qcom/' >> port_4_19/Makefile
+          echo 'obj-y += port_4_19/' >> drivers/Makefile
+          
+          if [ -d port_4_19/aw8697_haptic ]; then echo 'obj-y += aw8697.o' > port_4_19/aw8697_haptic/Makefile; fi
+          if [ -d port_4_19/cas_qcom ]; then
+            cd port_4_19/cas_qcom; rm -f Makefile
+            for f in *.c; do echo "obj-y += ${f%.c}.o" >> Makefile; done
+            cd $GITHUB_WORKSPACE/kernel54
+          fi
+
+      - name: Config and Build
+        run: |
+          set +e
+          cd $GITHUB_WORKSPACE/kernel54
+          make ARCH=arm64 gki_defconfig
+          echo 'CONFIG_I2C=y' >> .config
+          echo 'CONFIG_POWER_SUPPLY=y' >> .config
+          echo 'CONFIG_INPUT=y' >> .config
+          echo 'CONFIG_INPUT_MISC=y' >> .config
+          echo 'CONFIG_SCSI=y' >> .config
+          echo 'CONFIG_SCSI_UFSHCD=y' >> .config
+          echo 'CONFIG_PINCTRL_SM8250=y' >> .config
+          make ARCH=arm64 olddefconfig
+          
+          make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j4 Image > build.log 2>&1
+          
+          if [ $? -ne 0 ]; then
+            echo "=== 编译失败，提取最后 50 行日志 ==="
+            tail -n 50 build.log
+            exit 1
+          fi
+
+      - name: Upload Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image_cas_core
+          path: kernel54/arch/arm64/boot/Image
+          retention-days: 30
+
+      - name: Commit Image
+        run: |
+          cp kernel54/arch/arm64/boot/Image ./Image_cas_5.4_core
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add Image_cas_5.4_core
+          git commit -m "ci: add 5.4 core image (UFS/CLK from 5.10)" || true
+          git push || true
