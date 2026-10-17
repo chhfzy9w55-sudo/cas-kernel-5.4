@@ -30,7 +30,7 @@ jobs:
           cd $GITHUB_WORKSPACE
           git clone --depth=1 --filter=blob:none --sparse -b v5.10 https://github.com/torvalds/linux.git linux510
           cd linux510
-          git sparse-checkout set drivers/scsi/ufs drivers/clk/qcom drivers/interconnect/qcom include/dt-bindings
+          git sparse-checkout set drivers/scsi/ufs drivers/clk/qcom drivers/interconnect/qcom include/dt-bindings include/linux/power_supply.h
 
       - name: Overlay 5.10 core into 5.4
         run: |
@@ -39,6 +39,8 @@ jobs:
           cp -rvf linux510/drivers/clk/qcom/* kernel54/drivers/clk/qcom/
           cp -rvf linux510/drivers/interconnect/qcom/* kernel54/drivers/interconnect/qcom/
           cp -rvf linux510/include/dt-bindings/* kernel54/include/dt-bindings/
+          # 核心操作：用 5.10 的头文件覆盖 5.4
+          cp -rvf linux510/include/linux/power_supply.h kernel54/include/linux/power_supply.h
 
       - name: Fetch 4.19 peripherals
         run: |
@@ -54,38 +56,11 @@ jobs:
             done
           done
 
-      - name: Fetch qcom headers and overwrite
+      - name: Fetch qcom headers
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           mkdir -p include/linux/qpnp
-          
-          # 核心动作：用小米 4.19 的 power_supply.h 覆盖 5.4 的
-          curl -sL --max-time 60 -o include/linux/power_supply.h "$BASE/include/linux/power_supply.h" 2>/dev/null || true
-          
-          # 缝合：把 5.4 原生需要的 battery_info 成员补进 4.19 的头文件
-          python3 - << 'PYEOF'
-import re
-with open('include/linux/power_supply.h', 'r') as f:
-    header = f.read()
-
-# 1. 补充结构体成员
-if 'voltage_max_design_uv' not in header:
-    # 找结构体结尾，强行插入
-    header = header.replace(
-        'struct power_supply_battery_info {',
-        'struct power_supply_battery_info {\n\tint voltage_max_design_uv;\n\tint factory_internal_resistance_uohm;\n\tstruct power_supply_resistance_temp_table *resist_table;\n\tint ocv_table_size[POWER_SUPPLY_OCV_TEMP_MAX];\n\tint *ocv_table[POWER_SUPPLY_OCV_TEMP_MAX];\n\tint ocv_temp[POWER_SUPPLY_OCV_TEMP_MAX];'
-    )
-
-# 2. 补充 POWER_SUPPLY_OCV_TEMP_MAX 宏
-if 'POWER_SUPPLY_OCV_TEMP_MAX' not in header:
-    header = '#define POWER_SUPPLY_OCV_TEMP_MAX 10\n' + header
-
-with open('include/linux/power_supply.h', 'w') as f:
-    f.write(header)
-print("Surgery complete on power_supply.h")
-PYEOF
-          
           for h in qpnp-revid.h qpnp-smb5.h qpnp-fg.h qpnp-adc.h qpnp-qg.h qpnp-smb2.h qpnp-flash.h; do
             curl -sL --max-time 60 -o "include/linux/qpnp/$h" "$BASE/include/linux/qpnp/$h" 2>/dev/null || true
           done
@@ -94,20 +69,13 @@ PYEOF
       - name: Patch 4.19 peripherals
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          
-          # 暴力修复 wakeup_source_register 签名（直接对文件执行 sed 替换）
           find port_4_19 -name "*.c" -exec sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' {} \;
-          
-          # 修复 asm/uaccess.h
           find port_4_19 -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} \;
-          
-          # 强行在文件头部注入 do_gettimeofday 的宏
           for file in $(find port_4_19 -name "*.c"); do
             if grep -q "do_gettimeofday" "$file"; then
               sed -i '1i #include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' "$file"
             fi
           done
-          echo "Patches applied via bash sed."
 
       - name: HARDCODE Makefiles
         run: |
@@ -175,5 +143,5 @@ PYEOF
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add Image_cas_5.4_core
-          git commit -m "ci: add 5.4 core image (overwrite power_supply.h)" || true
+          git commit -m "ci: add 5.4 core image" || true
           git push || true
