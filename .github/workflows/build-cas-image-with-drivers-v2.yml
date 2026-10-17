@@ -38,46 +38,32 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          
-          # 拉取外设 + 核心子系统
-          for dir in \
-            "drivers/input/misc/aw8697_haptic" \
-            "drivers/power/supply/cas_qcom" \
-            "drivers/scsi/ufs" \
-            "drivers/clk/qcom" \
-            "drivers/interconnect/qcom"; do
-            
-            # 为了不污染 5.4 原有的兼容目录，我们把 4.19 的源码放到独立文件夹
-            DEST="port_4_19/$(basename $dir)"
+          for entry in \
+            "drivers/input/misc/aw8697_haptic:aw8697_haptic" \
+            "drivers/power/supply/cas_qcom:cas_qcom" \
+            "drivers/scsi/ufs:ufs" \
+            "drivers/clk/qcom:clk_qcom" \
+            "drivers/interconnect/qcom:ic_qcom"; do
+            SRC=$(echo $entry | cut -d: -f1)
+            DEST="port_4_19/$(echo $entry | cut -d: -f2)"
             mkdir -p "$DEST"
-            
-            API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$dir?ref=cas-q-oss"
+            API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$SRC?ref=cas-q-oss"
             curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
-              curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$dir/$f" 2>/dev/null
+              curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
             done
           done
-          
-          echo "=== 拉取的目录 ==="
-          ls -la port_4_19/
 
       - name: Fetch dt-bindings and headers
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          mkdir -p include/linux/qpnp
-          
-          # 拉取 4.19 的 dt-bindings (时钟/电源/互连)
-          mkdir -p include/dt-bindings/clock include/dt-bindings/power include/dt-bindings/interconnect
+          mkdir -p include/linux/qpnp include/dt-bindings/clock include/dt-bindings/power include/dt-bindings/interconnect
           curl -sL --max-time 60 -o include/dt-bindings/clock/qcom,gcc-kona.h "$BASE/include/dt-bindings/clock/qcom,gcc-kona.h" 2>/dev/null || true
           curl -sL --max-time 60 -o include/dt-bindings/clock/qcom,rpmh.h "$BASE/include/dt-bindings/clock/qcom,rpmh.h" 2>/dev/null || true
           curl -sL --max-time 60 -o include/dt-bindings/power/qcom,rpmpd.h "$BASE/include/dt-bindings/power/qcom,rpmpd.h" 2>/dev/null || true
-          
-          # 其他关键头文件
           for h in qpnp-revid.h qpnp-smb5.h qpnp-fg.h; do
             curl -sL --max-time 60 -o "include/linux/qpnp/$h" "$BASE/include/linux/qpnp/$h" 2>/dev/null || true
           done
-          
-          # pmic-voter
           curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
           for p in "drivers/power/supply/qcom/pmic-voter.c" "drivers/power/supply/pmic-voter.c"; do
             curl -sL --max-time 60 -o /tmp/pv.c "$BASE/$p" 2>/dev/null
@@ -93,7 +79,6 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           curl -sL --max-time 60 -o /tmp/ps_cas.h "$BASE/include/linux/power_supply.h" 2>/dev/null || true
-          
           if [ -s /tmp/ps_cas.h ]; then
             python3 << 'PYEOF'
           import re
@@ -111,8 +96,122 @@ jobs:
           PYEOF
           fi
 
-      - name: Patch for 5.4
+      - name: Patch for 5.4 using Python
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          # 处理全量代码的 API 兼容
-          find port_4_19 -name "*.c" -o -
+          python3 << 'PYEOF'
+          import os, re
+
+          # 用 Python 遍历，彻底干掉 shell find 转义问题
+          for root, dirs, files in os.walk('port_4_19'):
+              for file in files:
+                  if not (file.endswith('.c') or file.endswith('.h')):
+                      continue
+                  fpath = os.path.join(root, file)
+                  
+                  with open(fpath, 'r', errors='ignore') as f:
+                      content = f.read()
+                  
+                  modified = False
+                  # 1. 替换 uaccess.h
+                  if 'asm/uaccess.h' in content:
+                      content = content.replace('asm/uaccess.h', 'linux/uaccess.h')
+                      modified = True
+                  
+                  # 2. 替换 do_gettimeofday
+                  if 'do_gettimeofday' in content:
+                      lines = content.split('\n')
+                      last_inc = 0
+                      for i, line in enumerate(lines):
+                          if line.startswith('#include'):
+                              last_inc = i
+                      
+                      patch = [
+                          '#include <linux/timekeeping.h>',
+                          '#ifndef do_gettimeofday',
+                          '#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)',
+                          '#endif'
+                      ]
+                      lines = lines[:last_inc+1] + patch + lines[last_inc+1:]
+                      content = '\n'.join(lines)
+                      modified = True
+                  
+                  if modified:
+                      with open(fpath, 'w') as f:
+                          f.write(content)
+          print("Python patch applied successfully.")
+          PYEOF
+
+      - name: HARDCODE Makefiles
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          echo 'obj-y += aw8697_haptic/' > port_4_19/Makefile
+          echo 'obj-y += cas_qcom/' >> port_4_19/Makefile
+          echo 'obj-y += ufs/' >> port_4_19/Makefile
+          echo 'obj-y += clk_qcom/' >> port_4_19/Makefile
+          echo 'obj-y += ic_qcom/' >> port_4_19/Makefile
+          echo 'obj-y += pmic-voter/' >> port_4_19/Makefile
+          echo 'obj-y += port_4_19/' >> drivers/Makefile
+          
+          for d in ufs clk_qcom ic_qcom cas_qcom; do
+            if [ -d "port_4_19/$d" ]; then
+              cd "port_4_19/$d"
+              rm -f Makefile
+              for f in *.c; do 
+                [ -f "$f" ] && echo "obj-y += ${f%.c}.o" >> Makefile
+              done
+              cd $GITHUB_WORKSPACE/kernel54
+            fi
+          done
+          if [ -d port_4_19/aw8697_haptic ]; then
+            echo 'obj-y += aw8697.o' > port_4_19/aw8697_haptic/Makefile
+          fi
+
+      - name: Generate config force
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          make ARCH=arm64 gki_defconfig
+          echo 'CONFIG_I2C=y' >> .config
+          echo 'CONFIG_POWER_SUPPLY=y' >> .config
+          echo 'CONFIG_INPUT=y' >> .config
+          echo 'CONFIG_INPUT_MISC=y' >> .config
+          echo 'CONFIG_SCSI=y' >> .config
+          echo 'CONFIG_SCSI_UFSHCD=y' >> .config
+          make ARCH=arm64 olddefconfig
+
+      - name: Build Image
+        run: |
+          set +e
+          cd $GITHUB_WORKSPACE/kernel54
+          make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image > build.log 2>&1
+          
+          RESULT=$?
+          if [ $RESULT -ne 0 ]; then
+            echo "=== 编译失败，提取错误 ==="
+            grep -i "error:" build.log | head -30
+            echo "::error title=编译失败::请查看上面的 error 输出。"
+            exit $RESULT
+          else
+            echo "=== 编译成功 ==="
+            ls -la arch/arm64/boot/Image
+          fi
+
+      - name: Copy Image to root
+        run: |
+          cp kernel54/arch/arm64/boot/Image ./Image_cas_5.4_with_drivers
+          ls -la Image_cas_5.4_with_drivers
+
+      - name: Upload Image Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image_cas_5.4
+          path: Image_cas_5.4_with_drivers
+          retention-days: 30
+
+      - name: Commit Image to repo
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add Image_cas_5.4_with_drivers
+          git commit -m "ci: add cas 5.4 Image (UFS+CLK+drivers)" || true
+          git push || true
