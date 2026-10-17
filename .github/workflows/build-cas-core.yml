@@ -54,11 +54,15 @@ jobs:
             done
           done
 
-      - name: Fetch qcom headers
+      - name: Fetch qcom headers and overwrite
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           mkdir -p include/linux/qpnp
+          
+          # 核心动作：用小米 4.19 的 power_supply.h 覆盖 5.4 的
+          curl -sL --max-time 60 -o include/linux/power_supply.h "$BASE/include/linux/power_supply.h" 2>/dev/null || true
+          
           for h in qpnp-revid.h qpnp-smb5.h qpnp-fg.h qpnp-adc.h qpnp-qg.h qpnp-smb2.h qpnp-flash.h; do
             curl -sL --max-time 60 -o "include/linux/qpnp/$h" "$BASE/include/linux/qpnp/$h" 2>/dev/null || true
           done
@@ -100,21 +104,13 @@ jobs:
 
           mkdir -p drivers/port_4_19/ufs drivers/port_4_19/clk_qcom drivers/port_4_19/ic_qcom drivers/port_4_19/cas_qcom drivers/port_4_19/aw8697_haptic
 
-          for d in ufs clk_qcom ic_qcom; do
+          for d in ufs clk_qcom ic_qcom cas_qcom; do
             cd drivers/port_4_19/$d
             rm -f Makefile
             for f in *.c; do [ -f "$f" ] && echo "obj-y += ${f%.c}.o" >> Makefile; done
             touch Makefile
             cd $GITHUB_WORKSPACE/kernel54
           done
-          
-          # 精准指定 cas_qcom 编译我们验证过的 3 个文件，完美绕开 battery.c
-          cd drivers/port_4_19/cas_qcom
-          rm -f Makefile
-          echo 'obj-y += bq25790_charger.o' > Makefile
-          echo 'obj-y += bq27z561_fg.o' >> Makefile
-          echo 'obj-y += max77932.o' >> Makefile
-          cd $GITHUB_WORKSPACE/kernel54
           
           echo 'obj-y += aw8697.o' > drivers/port_4_19/aw8697_haptic/Makefile
 
@@ -159,5 +155,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add Image_cas_5.4_core
-          git commit -m "ci: add 5.4 core image (UFS/CLK from 5.10)" || true
+          git commit -m "ci: add 5.4 core image (overwrite power_supply.h)" || true
           git push || true
