@@ -47,19 +47,41 @@ jobs:
             done
           done
 
-      - name: Fetch pmic-voter and headers
+      - name: Fetch qcom headers
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
+          
+          mkdir -p include/linux/qpnp
           mkdir -p include/linux
+          
+          # 1. 拉取 qpnp 相关的所有依赖头文件
+          for h in qpnp-revid.h qpnp-smb5.h qpnp-fg.h qpnp-adc.h qpnp-qg.h qpnp-smb2.h qpnp-flash.h; do
+            echo "Fetching $h..."
+            curl -sL --max-time 60 -o "include/linux/qpnp/$h" "$BASE/include/linux/qpnp/$h" 2>/dev/null || true
+            # 清理 404 页面
+            if [ -f "include/linux/qpnp/$h" ] && head -c 10 "include/linux/qpnp/$h" | grep -q "404"; then
+              rm -f "include/linux/qpnp/$h"
+            fi
+          done
+          
+          # 2. 拉取 pmic-voter
           curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
+          if [ -f include/linux/pmic-voter.h ] && head -c 10 include/linux/pmic-voter.h | grep -q "404"; then
+             rm -f include/linux/pmic-voter.h
+          fi
+          
           for p in "drivers/power/supply/qcom/pmic-voter.c" "drivers/power/supply/pmic-voter.c"; do
             curl -sL --max-time 60 -o /tmp/pv.c "$BASE/$p" 2>/dev/null
             if [ -s /tmp/pv.c ] && ! head -c 10 /tmp/pv.c | grep -q "404"; then
               cp /tmp/pv.c drivers/power/supply/pmic-voter.c
+              echo "Found pmic-voter.c at $p"
               break
             fi
           done
+          
+          echo "=== 拉取结果 ==="
+          ls -la include/linux/qpnp/
 
       - name: Patch power_supply.h
         run: |
@@ -115,7 +137,6 @@ jobs:
           fi
           
           if [ -d drivers/power/supply/cas_qcom ]; then
-            # 提取所有 .c 文件，生成纯 obj-y 列表
             cd drivers/power/supply/cas_qcom
             rm -f Makefile
             for f in *.c; do
@@ -123,16 +144,10 @@ jobs:
             done
             cd $GITHUB_WORKSPACE/kernel54
           fi
-          
-          echo "=== aw8697 Makefile ==="
-          cat drivers/input/misc/aw8697_haptic/Makefile
-          echo "=== cas_qcom Makefile ==="
-          cat drivers/power/supply/cas_qcom/Makefile
 
       - name: Generate config force
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          # 不要用 defconfig 了，直接生成并 patch .config
           make ARCH=arm64 gki_defconfig
           
           # 暴力覆盖依赖：把 I2C 和 POWER_SUPPLY 强行设为 y，避免依赖阻断
@@ -141,7 +156,6 @@ jobs:
           echo 'CONFIG_INPUT=y' >> .config
           echo 'CONFIG_INPUT_MISC=y' >> .config
           
-          # 解决循环依赖/旧默认值覆盖
           make ARCH=arm64 olddefconfig
 
       - name: Build Image
