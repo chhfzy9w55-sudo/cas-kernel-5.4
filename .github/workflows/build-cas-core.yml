@@ -59,8 +59,6 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           mkdir -p include/linux/qpnp
-          
-          # 补全所有可能缺失的头文件
           for h in qpnp-revid.h qpnp-smb5.h qpnp-fg.h qpnp-adc.h qpnp-qg.h qpnp-smb2.h qpnp-flash.h; do
             curl -sL --max-time 60 -o "include/linux/qpnp/$h" "$BASE/include/linux/qpnp/$h" 2>/dev/null || true
           done
@@ -90,35 +88,36 @@ jobs:
       - name: HARDCODE Makefiles
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          
-          # 移动目录
           mkdir -p drivers/port_4_19
           if [ -d port_4_19 ]; then
             cp -rf port_4_19/* drivers/port_4_19/
             rm -rf port_4_19
           fi
-
-          # 给父目录挂载
+          
           if ! grep -q "port_4_19" drivers/Makefile; then
             echo 'obj-y += port_4_19/' >> drivers/Makefile
           fi
 
-          # 遍历子目录，如果不存在也建个空目录和空 Makefile，防止报错
           mkdir -p drivers/port_4_19/ufs drivers/port_4_19/clk_qcom drivers/port_4_19/ic_qcom drivers/port_4_19/cas_qcom drivers/port_4_19/aw8697_haptic
 
-          for d in ufs clk_qcom ic_qcom cas_qcom; do
+          for d in ufs clk_qcom ic_qcom; do
             cd drivers/port_4_19/$d
             rm -f Makefile
-            for f in *.c; do
-              [ -f "$f" ] && echo "obj-y += ${f%.c}.o" >> Makefile
-            done
-            touch Makefile  # 保证 Makefile 存在
+            for f in *.c; do [ -f "$f" ] && echo "obj-y += ${f%.c}.o" >> Makefile; done
+            touch Makefile
             cd $GITHUB_WORKSPACE/kernel54
           done
           
+          # 精准指定 cas_qcom 编译我们验证过的 3 个文件，完美绕开 battery.c
+          cd drivers/port_4_19/cas_qcom
+          rm -f Makefile
+          echo 'obj-y += bq25790_charger.o' > Makefile
+          echo 'obj-y += bq27z561_fg.o' >> Makefile
+          echo 'obj-y += max77932.o' >> Makefile
+          cd $GITHUB_WORKSPACE/kernel54
+          
           echo 'obj-y += aw8697.o' > drivers/port_4_19/aw8697_haptic/Makefile
 
-          # 重新生成 port_4_19 的 Makefile
           echo 'obj-y += aw8697_haptic/' > drivers/port_4_19/Makefile
           echo 'obj-y += cas_qcom/' >> drivers/port_4_19/Makefile
           echo 'obj-y += ufs/' >> drivers/port_4_19/Makefile
