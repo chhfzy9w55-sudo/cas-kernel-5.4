@@ -19,7 +19,6 @@ jobs:
           sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils
           sudo apt-get install -y clang-14 lld-14 llvm-14
           sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "deps done"
 
       - name: Clone 5.4 kernel with retry
         run: |
@@ -35,40 +34,56 @@ jobs:
             git clone --depth=1 -b android11-5.4 https://github.com/aosp-mirror/kernel_common.git kernel54
           fi
 
-      - name: Fetch cas drivers
+      - name: Fetch core cas drivers
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          for dir in drivers/input/misc/aw8697_haptic drivers/power/supply/cas_qcom; do
-            mkdir -p "$dir"
+          
+          # 拉取外设 + 核心子系统
+          for dir in \
+            "drivers/input/misc/aw8697_haptic" \
+            "drivers/power/supply/cas_qcom" \
+            "drivers/scsi/ufs" \
+            "drivers/clk/qcom" \
+            "drivers/interconnect/qcom"; do
+            
+            # 为了不污染 5.4 原有的兼容目录，我们把 4.19 的源码放到独立文件夹
+            DEST="port_4_19/$(basename $dir)"
+            mkdir -p "$DEST"
+            
             API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$dir?ref=cas-q-oss"
             curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
-              curl -sL --max-time 60 -o "$dir/$f" "$BASE/$dir/$f" 2>/dev/null
+              curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$dir/$f" 2>/dev/null
             done
           done
+          
+          echo "=== 拉取的目录 ==="
+          ls -la port_4_19/
 
-      - name: Fetch qcom headers
+      - name: Fetch dt-bindings and headers
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          
           mkdir -p include/linux/qpnp
-          mkdir -p include/linux
           
-          # 拉取 qpnp 相关头文件
-          for h in qpnp-revid.h qpnp-smb5.h qpnp-fg.h qpnp-adc.h qpnp-qg.h qpnp-smb2.h qpnp-flash.h; do
+          # 拉取 4.19 的 dt-bindings (时钟/电源/互连)
+          mkdir -p include/dt-bindings/clock include/dt-bindings/power include/dt-bindings/interconnect
+          curl -sL --max-time 60 -o include/dt-bindings/clock/qcom,gcc-kona.h "$BASE/include/dt-bindings/clock/qcom,gcc-kona.h" 2>/dev/null || true
+          curl -sL --max-time 60 -o include/dt-bindings/clock/qcom,rpmh.h "$BASE/include/dt-bindings/clock/qcom,rpmh.h" 2>/dev/null || true
+          curl -sL --max-time 60 -o include/dt-bindings/power/qcom,rpmpd.h "$BASE/include/dt-bindings/power/qcom,rpmpd.h" 2>/dev/null || true
+          
+          # 其他关键头文件
+          for h in qpnp-revid.h qpnp-smb5.h qpnp-fg.h; do
             curl -sL --max-time 60 -o "include/linux/qpnp/$h" "$BASE/include/linux/qpnp/$h" 2>/dev/null || true
-            if [ -f "include/linux/qpnp/$h" ] && head -c 10 "include/linux/qpnp/$h" | grep -q "404"; then
-              rm -f "include/linux/qpnp/$h"
-            fi
           done
           
-          # 拉取 pmic-voter
+          # pmic-voter
           curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
           for p in "drivers/power/supply/qcom/pmic-voter.c" "drivers/power/supply/pmic-voter.c"; do
             curl -sL --max-time 60 -o /tmp/pv.c "$BASE/$p" 2>/dev/null
             if [ -s /tmp/pv.c ] && ! head -c 10 /tmp/pv.c | grep -q "404"; then
-              cp /tmp/pv.c drivers/power/supply/pmic-voter.c
+              mkdir -p port_4_19/pmic-voter
+              cp /tmp/pv.c port_4_19/pmic-voter/pmic-voter.c
               break
             fi
           done
@@ -78,120 +93,26 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           curl -sL --max-time 60 -o /tmp/ps_cas.h "$BASE/include/linux/power_supply.h" 2>/dev/null || true
-          python3 << 'PYEOF'
+          
+          if [ -s /tmp/ps_cas.h ]; then
+            python3 << 'PYEOF'
           import re
-          with open('/tmp/ps_cas.h') as f:
-              cas = f.read()
-          with open('include/linux/power_supply.h') as f:
-              c54 = f.read()
+          with open('/tmp/ps_cas.h') as f: cas = f.read()
+          with open('include/linux/power_supply.h') as f: c54 = f.read()
           c54 = re.sub(r'\n*/\* cas 4\.19 vendor extensions \*/.*?\n\};\n?', '\n', c54, flags=re.DOTALL)
           pat = r'POWER_SUPPLY_[A-Z_0-9]+'
           diff = sorted(set(re.findall(pat, cas)) - set(re.findall(pat, c54)))
           last_endif = c54.rfind('#endif')
           insertion = '\n/* cas 4.19 vendor extensions */\nenum cas_vendor_power_supply_ext {\n'
-          for d in diff:
-              insertion += '\t' + d + ',\n'
+          for d in diff: insertion += '\t' + d + ',\n'
           insertion += '};\n\n'
-          new_content = c54[:last_endif] + insertion + c54[last_endif:]
           with open('include/linux/power_supply.h', 'w') as f:
-              f.write(new_content)
+              f.write(c54[:last_endif] + insertion + c54[last_endif:])
           PYEOF
+          fi
 
       - name: Patch for 5.4
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          find drivers/input/misc/aw8697_haptic drivers/power/supply -name "*.c" -o -name "*.h" 2>/dev/null | while read f; do
-            grep -q "asm/uaccess.h" "$f" 2>/dev/null && sed -i 's|<asm/uaccess.h>|<linux/uaccess.h>|g' "$f"
-            if grep -q "do_gettimeofday" "$f" 2>/dev/null; then
-              LAST=$(grep -n "^#include" "$f" | tail -1 | cut -d: -f1)
-              head -${LAST} "$f" > /tmp/p.c
-              echo '#include <linux/timekeeping.h>' >> /tmp/p.c
-              echo '#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' >> /tmp/p.c
-              tail -n +$((${LAST}+1)) "$f" >> /tmp/p.c
-              mv /tmp/p.c "$f"
-            fi
-          done
-
-      - name: HARDCODE Makefiles
-        run: |
-          cd $GITHUB_WORKSPACE/kernel54
-          
-          # 1. 挂载主 Makefile
-          echo 'obj-y += aw8697_haptic/' >> drivers/input/misc/Makefile
-          echo 'obj-y += cas_qcom/' >> drivers/power/supply/Makefile
-          [ -f drivers/power/supply/pmic-voter.c ] && echo 'obj-y += pmic-voter.o' >> drivers/power/supply/Makefile
-          
-          # 2. 暴力重写 aw8697 Makefile
-          if [ -d drivers/input/misc/aw8697_haptic ]; then
-            echo 'obj-y += aw8697.o' > drivers/input/misc/aw8697_haptic/Makefile
-          fi
-          
-          # 3. 暴力重写 cas_qcom Makefile (只编译我们已经验证过能过的 3 个文件，排除 battery.c 等报错源头)
-          if [ -d drivers/power/supply/cas_qcom ]; then
-            cd drivers/power/supply/cas_qcom
-            rm -f Makefile
-            echo 'obj-y += bq25790_charger.o' >> Makefile
-            echo 'obj-y += bq27z561_fg.o' >> Makefile
-            echo 'obj-y += max77932.o' >> Makefile
-            cd $GITHUB_WORKSPACE/kernel54
-          fi
-
-      - name: Generate config force
-        run: |
-          cd $GITHUB_WORKSPACE/kernel54
-          make ARCH=arm64 gki_defconfig
-          echo 'CONFIG_I2C=y' >> .config
-          echo 'CONFIG_POWER_SUPPLY=y' >> .config
-          echo 'CONFIG_INPUT=y' >> .config
-          echo 'CONFIG_INPUT_MISC=y' >> .config
-          make ARCH=arm64 olddefconfig
-
-      - name: Build Image
-        run: |
-          set +e
-          cd $GITHUB_WORKSPACE/kernel54
-          
-          # 把输出重定向到 build.log，防止 GitHub Actions 日志刷屏看不清
-          make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image > build.log 2>&1
-          
-          RESULT=$?
-          if [ $RESULT -ne 0 ]; then
-            echo "=== 编译失败，提取错误 ==="
-            # 只提取包含 error 的行
-            grep -i "error:" build.log | head -20
-            echo "::error title=编译失败::请查看上面的 error 输出。"
-            exit $RESULT
-          else
-            echo "=== 编译成功 ==="
-            ls -la arch/arm64/boot/Image
-          fi
-
-      - name: Check if drivers compiled
-        run: |
-          cd $GITHUB_WORKSPACE/kernel54
-          echo "=== 检查 aw8697 是否被编译 ==="
-          find drivers/input/misc/aw8697_haptic -name "*.o" | head -5
-          echo "=== 检查 cas_qcom 是否被编译 ==="
-          find drivers/power/supply/cas_qcom -name "*.o" | head -5
-          echo "=== 检查 Image 产物 ==="
-          ls -la arch/arm64/boot/Image
-
-      - name: Copy Image to root
-        run: |
-          cp kernel54/arch/arm64/boot/Image ./Image_cas_5.4_with_drivers
-          ls -la Image_cas_5.4_with_drivers
-
-      - name: Upload Image Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Image_cas_5.4
-          path: Image_cas_5.4_with_drivers
-          retention-days: 30
-
-      - name: Commit Image to repo
-        run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add Image_cas_5.4_with_drivers
-          git commit -m "ci: add cas 5.4 Image with builtin drivers (forced)" || true
-          git push || true
+          # 处理全量代码的 API 兼容
+          find port_4_19 -name "*.c" -o -
