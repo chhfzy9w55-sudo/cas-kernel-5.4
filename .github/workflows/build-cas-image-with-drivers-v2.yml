@@ -100,43 +100,70 @@ jobs:
             fi
           done
 
-      - name: Hardcode Makefile
+      - name: HARDCODE Makefiles
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          # 不碰 Kconfig，直接写死编译规则
+          
+          # 1. 挂载主 Makefile
           echo 'obj-y += aw8697_haptic/' >> drivers/input/misc/Makefile
           echo 'obj-y += cas_qcom/' >> drivers/power/supply/Makefile
-          if [ -f drivers/power/supply/pmic-voter.c ]; then
-            echo 'obj-y += pmic-voter.o' >> drivers/power/supply/Makefile
+          [ -f drivers/power/supply/pmic-voter.c ] && echo 'obj-y += pmic-voter.o' >> drivers/power/supply/Makefile
+          
+          # 2. 暴力重写子 Makefile（无视所有 CONFIG_ 判断）
+          if [ -d drivers/input/misc/aw8697_haptic ]; then
+            echo 'obj-y += aw8697.o' > drivers/input/misc/aw8697_haptic/Makefile
           fi
+          
+          if [ -d drivers/power/supply/cas_qcom ]; then
+            # 提取所有 .c 文件，生成纯 obj-y 列表
+            cd drivers/power/supply/cas_qcom
+            rm -f Makefile
+            for f in *.c; do
+              echo "obj-y += ${f%.c}.o" >> Makefile
+            done
+            cd $GITHUB_WORKSPACE/kernel54
+          fi
+          
+          echo "=== aw8697 Makefile ==="
+          cat drivers/input/misc/aw8697_haptic/Makefile
+          echo "=== cas_qcom Makefile ==="
+          cat drivers/power/supply/cas_qcom/Makefile
 
-      - name: Enable configs via append
+      - name: Generate config force
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          # 在 defconfig 后面追加配置
-          echo 'CONFIG_INPUT_AW8697_HAPTIC=y' >> arch/arm64/configs/gki_defconfig
-          echo 'CONFIG_QPNP_SMB5_CAS=y' >> arch/arm64/configs/gki_defconfig
-          echo 'CONFIG_CHARGER_BQ25790=y' >> arch/arm64/configs/gki_defconfig
-          echo 'CONFIG_FUEL_GAUGE_BQ28Z610=y' >> arch/arm64/configs/gki_defconfig
-          echo 'CONFIG_CP_MAX77932=y' >> arch/arm64/configs/gki_defconfig
-          make ARCH=arm64 gki_defconfig || true
+          # 不要用 defconfig 了，直接生成并 patch .config
+          make ARCH=arm64 gki_defconfig
           
-          # 强制开启（防止 gki_defconfig 把未知的配置给过滤掉）
-          sed -i 's/# CONFIG_QPNP_SMB5_CAS is not set/CONFIG_QPNP_SMB5_CAS=y/' .config 2>/dev/null || true
-          sed -i 's/# CONFIG_CHARGER_BQ25790 is not set/CONFIG_CHARGER_BQ25790=y/' .config 2>/dev/null || true
-          sed -i 's/# CONFIG_FUEL_GAUGE_BQ28Z610 is not set/CONFIG_FUEL_GAUGE_BQ28Z610=y/' .config 2>/dev/null || true
-          sed -i 's/# CONFIG_CP_MAX77932 is not set/CONFIG_CP_MAX77932=y/' .config 2>/dev/null || true
+          # 暴力覆盖依赖：把 I2C 和 POWER_SUPPLY 强行设为 y，避免依赖阻断
+          echo 'CONFIG_I2C=y' >> .config
+          echo 'CONFIG_POWER_SUPPLY=y' >> .config
+          echo 'CONFIG_INPUT=y' >> .config
+          echo 'CONFIG_INPUT_MISC=y' >> .config
+          
+          # 解决循环依赖/旧默认值覆盖
+          make ARCH=arm64 olddefconfig
 
       - name: Build Image
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image
 
+      - name: Check if drivers compiled
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          echo "=== 检查 aw8697 是否被编译 ==="
+          find drivers/input/misc/aw8697_haptic -name "*.o" | head -5
+          echo "=== 检查 cas_qcom 是否被编译 ==="
+          find drivers/power/supply/cas_qcom -name "*.o" | head -5
+          
+          echo "=== 检查 Image 产物 ==="
+          ls -la arch/arm64/boot/Image
+
       - name: Copy Image to root
         run: |
           cp kernel54/arch/arm64/boot/Image ./Image_cas_5.4_with_drivers
           ls -la Image_cas_5.4_with_drivers
-          echo "Image size: $(du -h Image_cas_5.4_with_drivers | cut -f1)"
 
       - name: Upload Image Artifact
         uses: actions/upload-artifact@v4
@@ -150,5 +177,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add Image_cas_5.4_with_drivers
-          git commit -m "ci: add cas 5.4 Image with builtin drivers" || true
+          git commit -m "ci: add cas 5.4 Image with builtin drivers (forced)" || true
           git push || true
