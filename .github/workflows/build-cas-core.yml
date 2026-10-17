@@ -63,6 +63,29 @@ jobs:
           # 核心动作：用小米 4.19 的 power_supply.h 覆盖 5.4 的
           curl -sL --max-time 60 -o include/linux/power_supply.h "$BASE/include/linux/power_supply.h" 2>/dev/null || true
           
+          # 缝合：把 5.4 原生需要的 battery_info 成员补进 4.19 的头文件
+          python3 - << 'PYEOF'
+import re
+with open('include/linux/power_supply.h', 'r') as f:
+    header = f.read()
+
+# 1. 补充结构体成员
+if 'voltage_max_design_uv' not in header:
+    # 找结构体结尾，强行插入
+    header = header.replace(
+        'struct power_supply_battery_info {',
+        'struct power_supply_battery_info {\n\tint voltage_max_design_uv;\n\tint factory_internal_resistance_uohm;\n\tstruct power_supply_resistance_temp_table *resist_table;\n\tint ocv_table_size[POWER_SUPPLY_OCV_TEMP_MAX];\n\tint *ocv_table[POWER_SUPPLY_OCV_TEMP_MAX];\n\tint ocv_temp[POWER_SUPPLY_OCV_TEMP_MAX];'
+    )
+
+# 2. 补充 POWER_SUPPLY_OCV_TEMP_MAX 宏
+if 'POWER_SUPPLY_OCV_TEMP_MAX' not in header:
+    header = '#define POWER_SUPPLY_OCV_TEMP_MAX 10\n' + header
+
+with open('include/linux/power_supply.h', 'w') as f:
+    f.write(header)
+print("Surgery complete on power_supply.h")
+PYEOF
+          
           for h in qpnp-revid.h qpnp-smb5.h qpnp-fg.h qpnp-adc.h qpnp-qg.h qpnp-smb2.h qpnp-flash.h; do
             curl -sL --max-time 60 -o "include/linux/qpnp/$h" "$BASE/include/linux/qpnp/$h" 2>/dev/null || true
           done
