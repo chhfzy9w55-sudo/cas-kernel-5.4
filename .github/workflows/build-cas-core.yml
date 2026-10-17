@@ -78,6 +78,53 @@ jobs:
               sed -i '1i #include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' "$file"
             fi
           done
+          # 补齐小米 4.19 专有的 power_supply 枚举/宏（当前头文件来自5.10，缺这些）
+          python3 << 'PYEOF2'
+          import re
+          H = 'include/linux/power_supply.h'
+          with open(H, 'r', errors='ignore') as f:
+              c = f.read()
+          extra_props = [
+              'POWER_SUPPLY_PROP_CHIP_OK',
+              'POWER_SUPPLY_PROP_CHARGING_ENABLED',
+              'POWER_SUPPLY_PROP_USB_CURRENT_NOW',
+              'POWER_SUPPLY_PROP_USB_VOLTAGE_NOW',
+              'POWER_SUPPLY_PROP_HIZ_MODE',
+              'POWER_SUPPLY_PROP_CHARGE_DONE',
+              'POWER_SUPPLY_PROP_MAIN_FCC_MAX',
+              'POWER_SUPPLY_PROP_ARTI_VBUS_ENABLE',
+              'POWER_SUPPLY_PROP_TERMINATION_CURRENT',
+              'POWER_SUPPLY_PROP_PARALLEL_MODE',
+              'POWER_SUPPLY_PROP_PARALLEL_OUTPUT_MODE',
+              'POWER_SUPPLY_PROP_REAL_TYPE',
+              'POWER_SUPPLY_PROP_MIN_ICL',
+              'POWER_SUPPLY_PROP_INPUT_CURRENT_SETTLED',
+              'POWER_SUPPLY_PROP_HW_CURRENT_MAX',
+              'POWER_SUPPLY_PROP_FCC_DELTA',
+          ]
+          # 枚举：在 POWER_SUPPLY_PROP_MAX 前插入缺失项
+          added = []
+          if 'POWER_SUPPLY_PROP_MAX' in c:
+              for p in extra_props:
+                  if p not in c:
+                      c = c.replace('POWER_SUPPLY_PROP_MAX,',
+                                    f'{p},\n\tPOWER_SUPPLY_PROP_MAX,')
+                      added.append(p)
+          # 充电类型枚举
+          if 'POWER_SUPPLY_CHARGE_TYPE_TAPER' not in c:
+              c = c.replace('POWER_SUPPLY_CHARGE_TYPE_TRICKLE,',
+                            'POWER_SUPPLY_CHARGE_TYPE_TAPER,\n\tPOWER_SUPPLY_CHARGE_TYPE_TRICKLE,')
+          # PL_* 宏（并联模式）
+          if 'POWER_SUPPLY_PL_USBIN_USBIN' not in c:
+              c += ('\n/* Xiaomi parallel charge macros */\n'
+                    '#define POWER_SUPPLY_PL_USBIN_USBIN\t\t(1)\n'
+                    '#define POWER_SUPPLY_PL_USBIN_USBIN_EXT\t\t(2)\n'
+                    '#define POWER_SUPPLY_PL_OUTPUT_VPH\t\t(3)\n'
+                    '#define POWER_SUPPLY_PL_USBMID_USBMID\t\t(4)\n')
+          with open(H, 'w') as f:
+              f.write(c)
+          print('power_supply.h extra enums added:', added)
+          PYEOF2
 
       - name: HARDCODE Makefiles
         run: |
