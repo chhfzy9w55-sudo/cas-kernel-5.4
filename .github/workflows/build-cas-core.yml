@@ -124,43 +124,6 @@ jobs:
           print("Makefiles created successfully via Python.")
           PYEOF2
 
-          def write_file(path, lines):
-              os.makedirs(os.path.dirname(path), exist_ok=True)
-              with open(path, 'w') as f:
-                  f.write('\n'.join(lines) + '\n')
-
-          # 1. 挂载到 drivers/Makefile
-          with open('drivers/Makefile', 'a') as f:
-              f.write('\nobj-y += port_4_19/\n')
-
-          # 2. 生成 port_4_19/Makefile
-          write_file('port_4_19/Makefile', [
-              'obj-y += aw8697_haptic/',
-              'obj-y += cas_qcom/',
-              'obj-y += ufs/',
-              'obj-y += clk_qcom/',
-              'obj-y += ic_qcom/',
-              'obj-y += pmic-voter/'
-          ])
-
-          # 3. 生成各子目录的 Makefile
-          for d in ['ufs', 'clk_qcom', 'ic_qcom', 'cas_qcom']:
-              if os.path.exists(f'port_4_19/{d}'):
-                  lines = []
-                  for file in os.listdir(f'port_4_19/{d}'):
-                      if file.endswith('.c'):
-                          lines.append(f'obj-y += {file[:-2]}.o')
-                  if lines:
-                      write_file(f'port_4_19/{d}/Makefile', lines)
-
-          if os.path.exists('port_4_19/aw8697_haptic'):
-              write_file('port_4_19/aw8697_haptic/Makefile', ['obj-y += aw8697.o'])
-          if os.path.exists('port_4_19/pmic-voter'):
-              write_file('port_4_19/pmic-voter/Makefile', ['obj-y += pmic-voter.o'])
-
-          print("Makefiles created successfully via Python.")
-          PYEOF2
-
       - name: Config and Build
         run: |
           set +e
