@@ -10,6 +10,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
       - name: Install deps
         run: |
           sudo apt-get update
@@ -50,7 +53,6 @@ jobs:
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           mkdir -p include/linux
           curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
-          
           for p in "drivers/power/supply/qcom/pmic-voter.c" "drivers/power/supply/pmic-voter.c"; do
             curl -sL --max-time 60 -o /tmp/pv.c "$BASE/$p" 2>/dev/null
             if [ -s /tmp/pv.c ] && ! head -c 10 /tmp/pv.c | grep -q "404"; then
@@ -65,12 +67,10 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           curl -sL --max-time 60 -o /tmp/ps_cas.h "$BASE/include/linux/power_supply.h" 2>/dev/null || true
-          
           if [ ! -s /tmp/ps_cas.h ]; then
             echo "ERROR: failed to download power_supply.h"
             exit 1
           fi
-          
           python3 << 'PYEOF'
           import re
           with open('/tmp/ps_cas.h') as f:
@@ -131,46 +131,26 @@ jobs:
 
       - name: Build Image
         run: |
-          set +e
           cd $GITHUB_WORKSPACE/kernel54
-          make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image > build.log 2>&1
-          RESULT=$?
-          echo "build exit=$RESULT"
-          ERRORS=$(grep -iE "error:|fatal error|undefined symbol" build.log | head -30)
-          {
-            echo "## cas 5.4 Image build report"
-            echo ""
-            echo "### exit=$RESULT"
-            echo ""
-            echo "### errors"
-            echo '```'
-            echo "$ERRORS"
-            echo '```'
-            echo ""
-            echo "### Image"
-            echo '```'
-            ls -la arch/arm64/boot/Image 2>/dev/null || echo "no image"
-            echo '```'
-          } >> $GITHUB_STEP_SUMMARY
-          exit 0
+          make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image
 
-      - name: Commit Image
-        if: success()
+      - name: Copy Image to root
         run: |
-          cd $GITHUB_WORKSPACE
-          if [ -f kernel54/arch/arm64/boot/Image ]; then
-            cp kernel54/arch/arm64/boot/Image ./Image_cas_5.4_with_drivers
-            git config user.name "github-actions"
-            git config user.email "actions@github.com"
-            git add Image_cas_5.4_with_drivers
-            git commit -m "ci: 5.4 Image with cas drivers builtin" || true
-            git push || true
-          fi
+          cp kernel54/arch/arm64/boot/Image ./Image_cas_5.4_with_drivers
+          ls -la Image_cas_5.4_with_drivers
+          echo "Image size: $(du -h Image_cas_5.4_with_drivers | cut -f1)"
 
-      - name: Upload log
-        if: always()
+      - name: Upload Image Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cas-image-build-log
-          path: kernel54/build.log
+          name: Image_cas_5.4
+          path: Image_cas_5.4_with_drivers
           retention-days: 30
+
+      - name: Commit Image to repo
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add Image_cas_5.4_with_drivers
+          git commit -m "ci: add cas 5.4 Image with builtin drivers" || true
+          git push || true
