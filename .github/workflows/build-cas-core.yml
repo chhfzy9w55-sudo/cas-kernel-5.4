@@ -38,7 +38,7 @@ jobs:
           cp -rvf linux510/drivers/scsi/ufs/* kernel54/drivers/scsi/ufs/
           cp -rvf linux510/drivers/clk/qcom/* kernel54/drivers/clk/qcom/
           cp -rvf linux510/drivers/interconnect/qcom/* kernel54/drivers/interconnect/qcom/
-          cp -rvf linux510/drivers/pinctrl/qcom/* kernel54/drivers/pinctrl/qcom/
+          # cp -rvf linux510/drivers/pinctrl/qcom/* kernel54/drivers/pinctrl/qcom/
           cp -rvf linux510/include/dt-bindings/* kernel54/include/dt-bindings/
 
       - name: Fetch 4.19 peripherals
