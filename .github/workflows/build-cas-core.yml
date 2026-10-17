@@ -30,7 +30,7 @@ jobs:
           cd $GITHUB_WORKSPACE
           git clone --depth=1 --filter=blob:none --sparse -b v5.10 https://github.com/torvalds/linux.git linux510
           cd linux510
-          git sparse-checkout set drivers/scsi/ufs drivers/clk/qcom drivers/interconnect/qcom drivers/pinctrl/qcom include/dt-bindings
+          git sparse-checkout set drivers/scsi/ufs drivers/clk/qcom drivers/interconnect/qcom include/dt-bindings
 
       - name: Overlay 5.10 core into 5.4
         run: |
@@ -38,7 +38,6 @@ jobs:
           cp -rvf linux510/drivers/scsi/ufs/* kernel54/drivers/scsi/ufs/
           cp -rvf linux510/drivers/clk/qcom/* kernel54/drivers/clk/qcom/
           cp -rvf linux510/drivers/interconnect/qcom/* kernel54/drivers/interconnect/qcom/
-          # cp -rvf linux510/drivers/pinctrl/qcom/* kernel54/drivers/pinctrl/qcom/
           cp -rvf linux510/include/dt-bindings/* kernel54/include/dt-bindings/
 
       - name: Fetch 4.19 peripherals
@@ -54,6 +53,18 @@ jobs:
               curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
             done
           done
+
+      - name: Fetch qcom headers
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
+          mkdir -p include/linux/qpnp
+          
+          # 补全所有可能缺失的头文件
+          for h in qpnp-revid.h qpnp-smb5.h qpnp-fg.h qpnp-adc.h qpnp-qg.h qpnp-smb2.h qpnp-flash.h; do
+            curl -sL --max-time 60 -o "include/linux/qpnp/$h" "$BASE/include/linux/qpnp/$h" 2>/dev/null || true
+          done
+          curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
 
       - name: Patch 4.19 peripherals
         run: |
@@ -76,53 +87,43 @@ jobs:
                       with open(fpath, 'w') as f: f.write(content)
           PYEOF
 
-      - name: HARDCODE Makefiles using Python
+      - name: HARDCODE Makefiles
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          python3 << 'PYEOF2'
-          import os, shutil
+          
+          # 移动目录
+          mkdir -p drivers/port_4_19
+          if [ -d port_4_19 ]; then
+            cp -rf port_4_19/* drivers/port_4_19/
+            rm -rf port_4_19
+          fi
 
-          # 1. 将拉取的源码从根目录移动到 drivers/ 下
-          if os.path.exists('port_4_19') and not os.path.exists('drivers/port_4_19'):
-              shutil.move('port_4_19', 'drivers/port_4_19')
+          # 给父目录挂载
+          if ! grep -q "port_4_19" drivers/Makefile; then
+            echo 'obj-y += port_4_19/' >> drivers/Makefile
+          fi
 
-          def write_file(path, lines):
-              os.makedirs(os.path.dirname(path), exist_ok=True)
-              with open(path, 'w') as f:
-                  f.write('\n'.join(lines) + '\n')
+          # 遍历子目录，如果不存在也建个空目录和空 Makefile，防止报错
+          mkdir -p drivers/port_4_19/ufs drivers/port_4_19/clk_qcom drivers/port_4_19/ic_qcom drivers/port_4_19/cas_qcom drivers/port_4_19/aw8697_haptic
 
-          # 2. 挂载到 drivers/Makefile
-          with open('drivers/Makefile', 'a') as f:
-              f.write('\nobj-y += port_4_19/\n')
+          for d in ufs clk_qcom ic_qcom cas_qcom; do
+            cd drivers/port_4_19/$d
+            rm -f Makefile
+            for f in *.c; do
+              [ -f "$f" ] && echo "obj-y += ${f%.c}.o" >> Makefile
+            done
+            touch Makefile  # 保证 Makefile 存在
+            cd $GITHUB_WORKSPACE/kernel54
+          done
+          
+          echo 'obj-y += aw8697.o' > drivers/port_4_19/aw8697_haptic/Makefile
 
-          # 3. 生成 drivers/port_4_19/Makefile
-          write_file('drivers/port_4_19/Makefile', [
-              'obj-y += aw8697_haptic/',
-              'obj-y += cas_qcom/',
-              'obj-y += ufs/',
-              'obj-y += clk_qcom/',
-              'obj-y += ic_qcom/',
-              'obj-y += pmic-voter/'
-          ])
-
-          # 4. 生成各子目录的 Makefile
-          for d in ['ufs', 'clk_qcom', 'ic_qcom', 'cas_qcom']:
-              dir_path = f'drivers/port_4_19/{d}'
-              if os.path.exists(dir_path):
-                  lines = []
-                  for file in os.listdir(dir_path):
-                      if file.endswith('.c'):
-                          lines.append(f'obj-y += {file[:-2]}.o')
-                  if lines:
-                      write_file(f'{dir_path}/Makefile', lines)
-
-          if os.path.exists('drivers/port_4_19/aw8697_haptic'):
-              write_file('drivers/port_4_19/aw8697_haptic/Makefile', ['obj-y += aw8697.o'])
-          if os.path.exists('drivers/port_4_19/pmic-voter'):
-              write_file('drivers/port_4_19/pmic-voter/Makefile', ['obj-y += pmic-voter.o'])
-
-          print("Makefiles created successfully via Python.")
-          PYEOF2
+          # 重新生成 port_4_19 的 Makefile
+          echo 'obj-y += aw8697_haptic/' > drivers/port_4_19/Makefile
+          echo 'obj-y += cas_qcom/' >> drivers/port_4_19/Makefile
+          echo 'obj-y += ufs/' >> drivers/port_4_19/Makefile
+          echo 'obj-y += clk_qcom/' >> drivers/port_4_19/Makefile
+          echo 'obj-y += ic_qcom/' >> drivers/port_4_19/Makefile
 
       - name: Config and Build
         run: |
@@ -135,29 +136,16 @@ jobs:
           echo 'CONFIG_INPUT_MISC=y' >> .config
           echo 'CONFIG_SCSI=y' >> .config
           echo 'CONFIG_SCSI_UFSHCD=y' >> .config
-          echo 'CONFIG_PINCTRL_SM8250=y' >> .config
           echo '# CONFIG_HID_PLAYSTATION is not set' >> .config
           make ARCH=arm64 olddefconfig
           
           make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j4 Image > build.log 2>&1
           
           if [ $? -ne 0 ]; then
-            echo "=== 编译失败，提取真正的 Error ==="
-            grep -i -n "error:" build.log | head -30
-            echo ""
-            echo "=== 上下文 ==="
-            grep -i -B 3 -A 5 "error:" build.log | head -80
+            echo "=== 编译失败，提取最后 50 行日志 ==="
+            grep -i -B 2 -A 5 "error:" build.log | head -80
             exit 1
           fi
-
-
-      - name: Upload build log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-error-log
-          path: kernel54/build.log
-          retention-days: 7
 
       - name: Upload Image
         uses: actions/upload-artifact@v4
