@@ -37,7 +37,7 @@ jobs:
           cd $GITHUB_WORKSPACE
           git clone --depth=1 --filter=blob:none --sparse -b v5.10 https://github.com/torvalds/linux.git linux510
           cd linux510
-          git sparse-checkout set drivers/scsi/ufs drivers/clk/qcom drivers/interconnect/qcom include/dt-bindings include/linux/power_supply.h
+          git sparse-checkout set drivers/scsi/ufs drivers/clk/qcom drivers/interconnect/qcom include/dt-bindings include/linux
 
       - name: Overlay 5.10 core into 5.4
         run: |
