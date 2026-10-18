@@ -68,10 +68,9 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           
-          # 使用单行 echo -e 创建头文件，彻底避免 YAML 缩进引发的语法错误
-          echo -e '#ifndef _XIAOMI_419_COMPAT_H\n#define _XIAOMI_419_COMPAT_H\n\n#include <linux/power_supply.h>\n#include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n\n#define POWER_SUPPLY_PROP_SHUTDOWN_DELAY 200\n#define POWER_SUPPLY_PROP_CAPACITY_RAW 201\n#define POWER_SUPPLY_PROP_SOC_DECIMAL 202\n#define POWER_SUPPLY_PROP_SOC_DECIMAL_RATE 203\n#define POWER_SUPPLY_PROP_COLD_THERMAL_LEVEL 204\n#define POWER_SUPPLY_PROP_RESISTANCE_ID 205\n#define POWER_SUPPLY_PROP_UPDATE_NOW 206\n#define POWER_SUPPLY_PROP_CHIP_OK 207\n#define POWER_SUPPLY_PROP_RESISTANCE 208\n#define POWER_SUPPLY_PROP_FASTCHARGE_MODE 209\n#define POWER_SUPPLY_PROP_TERMINATION_CURRENT 210\n#define POWER_SUPPLY_PROP_FFC_TERMINATION_CURRENT 211\n#define POWER_SUPPLY_PROP_RECHARGE_VBAT 212\n#define POWER_SUPPLY_PROP_CHARGE_DONE 213\n#define POWER_SUPPLY_PROP_SOH 214\n\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)\n\n#endif' > port_4_19/xiaomi_compat.h
+          # 生成纯净的本地兼容头（只处理 API，不碰不安全的枚举）
+          echo -e '#ifndef _XIAOMI_419_COMPAT_H\n#define _XIAOMI_419_COMPAT_H\n\n#include <linux/power_supply.h>\n#include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)\n\n#endif' > port_4_19/xiaomi_compat.h
 
-          # 遍历 4.19 驱动源码，插入本地兼容头，并修复老 API
           for file in $(find port_4_19 -name "*.c"); do
             sed -i '1i #include "../xiaomi_compat.h"' "$file"
             sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' "$file"
@@ -93,13 +92,21 @@ jobs:
 
           mkdir -p drivers/port_4_19/ufs drivers/port_4_19/clk_qcom drivers/port_4_19/ic_qcom drivers/port_4_19/cas_qcom drivers/port_4_19/aw8697_haptic
 
-          for d in ufs clk_qcom ic_qcom cas_qcom; do
+          for d in ufs clk_qcom ic_qcom; do
             cd drivers/port_4_19/$d
             rm -f Makefile
             for f in *.c; do [ -f "$f" ] && echo "obj-y += ${f%.c}.o" >> Makefile; done
             touch Makefile
             cd $GITHUB_WORKSPACE/kernel54
           done
+          
+          # 精准控制 cas_qcom 的编译，彻底剔除 battery.c
+          cd drivers/port_4_19/cas_qcom
+          rm -f Makefile
+          echo 'obj-y += bq25790_charger.o' > Makefile
+          echo 'obj-y += bq27z561_fg.o' >> Makefile
+          echo 'obj-y += max77932.o' >> Makefile
+          cd $GITHUB_WORKSPACE/kernel54
           
           echo 'obj-y += aw8697.o' > drivers/port_4_19/aw8697_haptic/Makefile
 
@@ -144,5 +151,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add Image_cas_5.4_core
-          git commit -m "ci: add 5.4 core image with local compat" || true
+          git commit -m "ci: add 5.4 core image (skip battery.c)" || true
           git push || true
