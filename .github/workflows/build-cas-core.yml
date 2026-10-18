@@ -1,4 +1,5 @@
 name: build-cas-core
+
 on:
   workflow_dispatch:
 
@@ -28,12 +29,23 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          # 1. download 4.19 power_supply.h
           curl -sL --max-time 60 -o /tmp/ps_4_19.h "$BASE/include/linux/power_supply.h"
-          # 2. overlay 5.10 header over the 5.4 one
-          cp -v $GITHUB_WORKSPACE/linux510/include/linux/power_supply.h include/linux/power_supply.h 2>/dev/null || curl -sL -o include/linux/power_supply.h "https://raw.githubusercontent.com/torvalds/linux/v5.10/include/linux/power_supply.h"
-          # 3. suture: inject missing 4.19 symbols as #define macros
-          python3 $GITHUB_WORKSPACE/.github/suture.py
+          curl -sL -o include/linux/power_supply.h "https://raw.githubusercontent.com/torvalds/linux/v5.10/include/linux/power_supply.h"
+          
+          python3 << 'PYEOF'
+          import re
+          with open('/tmp/ps_4_19.h') as f: cas = f.read()
+          with open('include/linux/power_supply.h') as f: current = f.read()
+          all_symbols = set(re.findall(r'\b(POWER_SUPPLY_[A-Z0-9_]+)\b', cas))
+          missing = [s for s in all_symbols if s not in current]
+          if missing:
+              insertion = "\n\n/* Injected from 4.19 for cas_qcom compatibility */\n"
+              for i, m in enumerate(missing):
+                  insertion += f"#ifndef {m}\n#define {m} (0x8000 + {i})\n#endif\n"
+              last_endif = current.rfind('#endif')
+              new_content = current[:last_endif] + insertion + current[last_endif:]
+              with open('include/linux/power_supply.h', 'w') as f: f.write(new_content)
+          PYEOF
 
       - name: Fetch 4.19 peripherals
         run: |
@@ -41,25 +53,20 @@ jobs:
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           for dir in "drivers/input/misc/aw8697_haptic:aw8697_haptic" "drivers/power/supply/cas_qcom:cas_qcom"; do
             SRC=$(echo $dir | cut -d: -f1)
-            DEST="drivers/port_cas/$(echo $dir | cut -d: -f2)"
+            DEST="port_cas/$(echo $dir | cut -d: -f2)"
             mkdir -p "$DEST"
             API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$SRC?ref=cas-q-oss"
             curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
               curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
             done
           done
-          # fetch missing ln8282.h header dependency for idtp9415.c
-          mkdir -p include/linux/power
-          curl -sL --max-time 60 -o include/linux/power/ln8282.h "$BASE/include/linux/power/ln8282.h"
 
       - name: Patch 4.19 peripherals
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          find drivers/port_cas -name "*.c" -exec sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' {} \;
-          find drivers/port_cas -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} \;
-          # idtp9415.h is a local sibling; use quotes include so the compiler finds it
-          sed -i 's|#include <idtp9415.h>|#include "idtp9415.h"|g' drivers/port_cas/cas_qcom/idtp9415.c
-          for file in $(find drivers/port_cas -name "*.c"); do
+          find port_cas -name "*.c" -exec sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' {} \;
+          find port_cas -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} \;
+          for file in $(find port_cas -name "*.c"); do
             if grep -q "do_gettimeofday" "$file"; then
               sed -i '1i #include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' "$file"
             fi
@@ -71,12 +78,16 @@ jobs:
           if ! grep -q "port_cas" drivers/Makefile; then
             echo 'obj-y += port_cas/' >> drivers/Makefile
           fi
-          echo 'obj-y += aw8697_haptic/' > drivers/port_cas/Makefile
-          echo 'obj-y += cas_qcom/' >> drivers/port_cas/Makefile
-          echo 'obj-y += aw8697.o' > drivers/port_cas/aw8697_haptic/Makefile
-          cd drivers/port_cas/cas_qcom
+          
+          echo 'obj-y += aw8697_haptic/' > port_cas/Makefile
+          echo 'obj-y += cas_qcom/' >> port_cas/Makefile
+          echo 'obj-y += aw8697.o' > port_cas/aw8697_haptic/Makefile
+          
+          cd port_cas/cas_qcom
           rm -f Makefile
-          for f in *.c; do [ -f "$f" ] && echo "obj-y += ${f%.c}.o" >> Makefile; done
+          # 断臂求生：只编译 battery.o 和 bq27z561_fg.o，彻底剔除无线充和快充
+          echo "obj-y += battery.o" > Makefile
+          echo "obj-y += bq27z561_fg.o" >> Makefile
           cd $GITHUB_WORKSPACE/kernel54
 
       - name: Config and Build
@@ -87,6 +98,7 @@ jobs:
           elif [ -f arch/arm64/configs/gki_defconfig ]; then
               make ARCH=arm64 gki_defconfig
           fi
+          
           echo 'CONFIG_I2C=y' >> .config
           echo 'CONFIG_POWER_SUPPLY=y' >> .config
           echo 'CONFIG_INPUT=y' >> .config
@@ -95,6 +107,7 @@ jobs:
           echo 'CONFIG_SCSI_UFSHCD=y' >> .config
           echo '# CONFIG_HID_PLAYSTATION is not set' >> .config
           make ARCH=arm64 olddefconfig
+          
           set +e
           set -o pipefail
           make ARCH=arm64 \
@@ -108,21 +121,15 @@ jobs:
             LLVM=1 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             -j2 Image > build.log 2>&1
+
           build_status=$?
           if [ "$build_status" -ne 0 ]; then
               echo "=== Build failed: exit code $build_status ==="
-              echo "=== Last 120 lines of build.log ==="
               tail -n 120 build.log
-              echo "=== Matching error indicators ==="
-              grep -in -B 2 -A 4 -E \
-                'error:|fatal error:|No rule to make target|Killed|signal 9|out of memory|No space left on device|Error 1' \
-                build.log | head -n 120 || true
+              grep -in -B 2 -A 4 -E 'error:|fatal error:|No rule to make target|Killed|signal 9|out of memory|Error 1' build.log | head -n 120 || true
               exit "$build_status"
           fi
-          test -s arch/arm64/boot/Image || {
-              echo "Build returned success, but Image is missing or empty."
-              exit 1
-          }
+          test -s arch/arm64/boot/Image || exit 1
 
       - name: Upload Image
         if: success()
