@@ -30,7 +30,6 @@ jobs:
           cd $GITHUB_WORKSPACE
           git clone --depth=1 --filter=blob:none --sparse -b v5.10 https://github.com/torvalds/linux.git linux510
           cd linux510
-          # 去掉了 include/linux/power_supply.h，sparse 只能指定目录
           git sparse-checkout set drivers/scsi/ufs drivers/clk/qcom drivers/interconnect/qcom include/dt-bindings
 
       - name: Overlay 5.10 core into 5.4
@@ -40,8 +39,6 @@ jobs:
           cp -rvf linux510/drivers/clk/qcom/* kernel54/drivers/clk/qcom/
           cp -rvf linux510/drivers/interconnect/qcom/* kernel54/drivers/interconnect/qcom/
           cp -rvf linux510/include/dt-bindings/* kernel54/include/dt-bindings/
-          
-          # 使用 curl 直接拉取 5.10 的头文件覆盖 5.4 的
           curl -sL --max-time 60 -o kernel54/include/linux/power_supply.h "https://raw.githubusercontent.com/torvalds/linux/v5.10/include/linux/power_supply.h"
 
       - name: Fetch 4.19 peripherals
@@ -71,107 +68,51 @@ jobs:
       - name: Patch 4.19 peripherals
         run: |
           cd $GITHUB_WORKSPACE/kernel54
+          
+          # 1. 修复 API
           find port_4_19 -name "*.c" -exec sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' {} \;
           find port_4_19 -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} \;
+          
           for file in $(find port_4_19 -name "*.c"); do
             if grep -q "do_gettimeofday" "$file"; then
               sed -i '1i #include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' "$file"
             fi
           done
-          # 暴力强制注入所有缺失的枚举和宏
-          python3 << 'PYEOF2'
-          import re
-          H = 'include/linux/power_supply.h'
-          with open(H, 'r', errors='ignore') as f:
-              c = f.read()
-              
-          extra_props = [
-              'POWER_SUPPLY_PROP_PARALLEL_MODE',
-              'POWER_SUPPLY_PROP_PARALLEL_OUTPUT_MODE',
-              'POWER_SUPPLY_PROP_REAL_TYPE',
-              'POWER_SUPPLY_PROP_MIN_ICL',
-              'POWER_SUPPLY_PROP_INPUT_CURRENT_SETTLED',
-              'POWER_SUPPLY_PROP_CHIP_OK',
-              'POWER_SUPPLY_PROP_CHARGING_ENABLED',
-              'POWER_SUPPLY_PROP_USB_CURRENT_NOW',
-              'POWER_SUPPLY_PROP_USB_VOLTAGE_NOW',
-              'POWER_SUPPLY_PROP_HIZ_MODE',
-              'POWER_SUPPLY_PROP_CHARGE_DONE',
-              'POWER_SUPPLY_PROP_MAIN_FCC_MAX',
-              'POWER_SUPPLY_PROP_ARTI_VBUS_ENABLE',
-              'POWER_SUPPLY_PROP_TERMINATION_CURRENT',
-              'POWER_SUPPLY_PROP_HW_CURRENT_MAX',
-              'POWER_SUPPLY_PROP_FCC_DELTA',
-              'POWER_SUPPLY_TYPE_USB_HVDCP_3',
-              'POWER_SUPPLY_TYPE_USB_HVDCP_3P5',
-              'POWER_SUPPLY_TYPE_USB_FLOAT',
-              'POWER_SUPPLY_TYPE_USB_HVDCP',
-              'POWER_SUPPLY_TYPE_WIRELESS',
-              'POWER_SUPPLY_TYPE_USB_PD',
-          ]
           
-          added = []
-          for p in extra_props:
-              if p not in c:
-                  # 直接加在 #endif 前面（如果找不到，直接加在文件末尾）
-                  if '#endif' in c:
-                      c = c.replace('#endif', f'#define {p} 999\n#endif', 1)
-                  else:
-                      c += f'\n#define {p} 999\n'
-                  added.append(p)
-                  
-          if 'POWER_SUPPLY_CHARGE_TYPE_TAPER' not in c:
-              c += '\n#define POWER_SUPPLY_CHARGE_TYPE_TAPER 99\n'
-              
-          with open(H, 'w') as f:
-              f.write(c)
-          print('Added:', added)
-          PYEOF2'
-          import re
-          H = 'include/linux/power_supply.h'
-          with open(H, 'r', errors='ignore') as f:
-              c = f.read()
-          extra_props = [
-              'POWER_SUPPLY_PROP_CHIP_OK',
-              'POWER_SUPPLY_PROP_CHARGING_ENABLED',
-              'POWER_SUPPLY_PROP_USB_CURRENT_NOW',
-              'POWER_SUPPLY_PROP_USB_VOLTAGE_NOW',
-              'POWER_SUPPLY_PROP_HIZ_MODE',
-              'POWER_SUPPLY_PROP_CHARGE_DONE',
-              'POWER_SUPPLY_PROP_MAIN_FCC_MAX',
-              'POWER_SUPPLY_PROP_ARTI_VBUS_ENABLE',
-              'POWER_SUPPLY_PROP_TERMINATION_CURRENT',
-              'POWER_SUPPLY_PROP_PARALLEL_MODE',
-              'POWER_SUPPLY_PROP_PARALLEL_OUTPUT_MODE',
-              'POWER_SUPPLY_PROP_REAL_TYPE',
-              'POWER_SUPPLY_PROP_MIN_ICL',
-              'POWER_SUPPLY_PROP_INPUT_CURRENT_SETTLED',
-              'POWER_SUPPLY_PROP_HW_CURRENT_MAX',
-              'POWER_SUPPLY_PROP_FCC_DELTA',
-          ]
-          # 枚举：在 POWER_SUPPLY_PROP_MAX 前插入缺失项
-          added = []
-          if 'POWER_SUPPLY_PROP_MAX' in c:
-              for p in extra_props:
-                  if p not in c:
-                      c = c.replace('POWER_SUPPLY_PROP_MAX,',
-                                    f'{p},\n\tPOWER_SUPPLY_PROP_MAX,')
-                      added.append(p)
-          # 充电类型枚举
-          if 'POWER_SUPPLY_CHARGE_TYPE_TAPER' not in c:
-              c = c.replace('POWER_SUPPLY_CHARGE_TYPE_TRICKLE,',
-                            'POWER_SUPPLY_CHARGE_TYPE_TAPER,\n\tPOWER_SUPPLY_CHARGE_TYPE_TRICKLE,')
-          # PL_* 宏（并联模式）
-          if 'POWER_SUPPLY_PL_USBIN_USBIN' not in c:
-              c += ('\n/* Xiaomi parallel charge macros */\n'
-                    '#define POWER_SUPPLY_PL_USBIN_USBIN\t\t(1)\n'
-                    '#define POWER_SUPPLY_PL_USBIN_USBIN_EXT\t\t(2)\n'
-                    '#define POWER_SUPPLY_PL_OUTPUT_VPH\t\t(3)\n'
-                    '#define POWER_SUPPLY_PL_USBMID_USBMID\t\t(4)\n')
-          with open(H, 'w') as f:
-              f.write(c)
-          print('power_supply.h extra enums added:', added)
-          PYEOF2
+          # 2. 暴力追加缺失的枚举和宏到 5.10 的 power_supply.h 文件末尾
+          cat >> include/linux/power_supply.h << 'HEADER_EOF'
+
+/* ======= Force Inject missing Xiaomi 4.19 enums ======= */
+#define POWER_SUPPLY_PROP_PARALLEL_MODE 999
+#define POWER_SUPPLY_PROP_PARALLEL_OUTPUT_MODE 998
+#define POWER_SUPPLY_PROP_REAL_TYPE 997
+#define POWER_SUPPLY_PROP_MIN_ICL 996
+#define POWER_SUPPLY_PROP_INPUT_CURRENT_SETTLED 995
+#define POWER_SUPPLY_PROP_CHIP_OK 994
+#define POWER_SUPPLY_PROP_CHARGING_ENABLED 993
+#define POWER_SUPPLY_PROP_USB_CURRENT_NOW 992
+#define POWER_SUPPLY_PROP_USB_VOLTAGE_NOW 991
+#define POWER_SUPPLY_PROP_HIZ_MODE 990
+#define POWER_SUPPLY_PROP_CHARGE_DONE 989
+#define POWER_SUPPLY_PROP_MAIN_FCC_MAX 988
+#define POWER_SUPPLY_PROP_ARTI_VBUS_ENABLE 987
+#define POWER_SUPPLY_PROP_TERMINATION_CURRENT 986
+#define POWER_SUPPLY_PROP_HW_CURRENT_MAX 985
+#define POWER_SUPPLY_PROP_FCC_DELTA 984
+#define POWER_SUPPLY_TYPE_USB_HVDCP_3 983
+#define POWER_SUPPLY_TYPE_USB_HVDCP_3P5 982
+#define POWER_SUPPLY_TYPE_USB_FLOAT 981
+#define POWER_SUPPLY_TYPE_USB_HVDCP 980
+#define POWER_SUPPLY_TYPE_WIRELESS 979
+#define POWER_SUPPLY_TYPE_USB_PD 978
+#define POWER_SUPPLY_CHARGE_TYPE_TAPER 977
+
+#define POWER_SUPPLY_PL_USBIN_USBIN 1
+#define POWER_SUPPLY_PL_USBIN_USBIN_EXT 2
+#define POWER_SUPPLY_PL_OUTPUT_VPH 3
+#define POWER_SUPPLY_PL_USBMID_USBMID 4
+/* ====================================================== */
+HEADER_EOF
 
       - name: HARDCODE Makefiles
         run: |
