@@ -30,7 +30,6 @@ jobs:
           cd $GITHUB_WORKSPACE
           git clone --depth=1 --filter=blob:none --sparse -b v5.10 https://github.com/torvalds/linux.git linux510
           cd linux510
-          # 只拉底层核心，绝对不拉 include/linux/power_supply.h
           git sparse-checkout set drivers/scsi/ufs drivers/clk/qcom drivers/interconnect/qcom include/dt-bindings
 
       - name: Overlay 5.10 core into 5.4
@@ -69,46 +68,13 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           
-          # 1. 在 cas_qcom 目录下生成一个私有的兼容头文件
-          cat > port_4_19/cas_qcom/xiaomi_compat.h << 'HEADER_EOF'
-#ifndef _XIAOMI_419_COMPAT_H
-#define _XIAOMI_419_COMPAT_H
+          # 使用单行 echo -e 创建头文件，彻底避免 YAML 缩进引发的语法错误
+          echo -e '#ifndef _XIAOMI_419_COMPAT_H\n#define _XIAOMI_419_COMPAT_H\n\n#include <linux/power_supply.h>\n#include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n\n#define POWER_SUPPLY_PROP_SHUTDOWN_DELAY 200\n#define POWER_SUPPLY_PROP_CAPACITY_RAW 201\n#define POWER_SUPPLY_PROP_SOC_DECIMAL 202\n#define POWER_SUPPLY_PROP_SOC_DECIMAL_RATE 203\n#define POWER_SUPPLY_PROP_COLD_THERMAL_LEVEL 204\n#define POWER_SUPPLY_PROP_RESISTANCE_ID 205\n#define POWER_SUPPLY_PROP_UPDATE_NOW 206\n#define POWER_SUPPLY_PROP_CHIP_OK 207\n#define POWER_SUPPLY_PROP_RESISTANCE 208\n#define POWER_SUPPLY_PROP_FASTCHARGE_MODE 209\n#define POWER_SUPPLY_PROP_TERMINATION_CURRENT 210\n#define POWER_SUPPLY_PROP_FFC_TERMINATION_CURRENT 211\n#define POWER_SUPPLY_PROP_RECHARGE_VBAT 212\n#define POWER_SUPPLY_PROP_CHARGE_DONE 213\n#define POWER_SUPPLY_PROP_SOH 214\n\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)\n\n#endif' > port_4_19/xiaomi_compat.h
 
-#include <linux/power_supply.h>
-#include <linux/time64.h>
-#include <linux/ktime.h>
-#include <linux/timekeeping.h>
-
-/* 将 4.19 小米专有枚举定义为驱动局部宏，避开 5.4 原生枚举数值 */
-#define POWER_SUPPLY_PROP_SHUTDOWN_DELAY 200
-#define POWER_SUPPLY_PROP_CAPACITY_RAW 201
-#define POWER_SUPPLY_PROP_SOC_DECIMAL 202
-#define POWER_SUPPLY_PROP_SOC_DECIMAL_RATE 203
-#define POWER_SUPPLY_PROP_COLD_THERMAL_LEVEL 204
-#define POWER_SUPPLY_PROP_RESISTANCE_ID 205
-#define POWER_SUPPLY_PROP_UPDATE_NOW 206
-#define POWER_SUPPLY_PROP_CHIP_OK 207
-#define POWER_SUPPLY_PROP_RESISTANCE 208
-#define POWER_SUPPLY_PROP_FASTCHARGE_MODE 209
-#define POWER_SUPPLY_PROP_TERMINATION_CURRENT 210
-#define POWER_SUPPLY_PROP_FFC_TERMINATION_CURRENT 211
-#define POWER_SUPPLY_PROP_RECHARGE_VBAT 212
-#define POWER_SUPPLY_PROP_CHARGE_DONE 213
-#define POWER_SUPPLY_PROP_SOH 214
-
-/* 兼容 4.19 的 do_gettimeofday */
-#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)
-
-#endif
-HEADER_EOF
-
-          # 2. 遍历 4.19 驱动源码，插入本地兼容头，并修复老 API
+          # 遍历 4.19 驱动源码，插入本地兼容头，并修复老 API
           for file in $(find port_4_19 -name "*.c"); do
-            # 在文件头部插入本地兼容头（注意路径相对位置）
-            sed -i '1i #include "xiaomi_compat.h"' "$file"
-            # 修复 wakeup_source_register
+            sed -i '1i #include "../xiaomi_compat.h"' "$file"
             sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' "$file"
-            # 修复 uaccess
             sed -i 's|asm/uaccess.h|linux/uaccess.h|g' "$file"
           done
 
