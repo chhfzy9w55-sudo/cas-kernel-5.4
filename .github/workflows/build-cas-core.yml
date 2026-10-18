@@ -21,10 +21,16 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Clone 5.4 kernel
+        uses: actions/checkout@v4
+        with:
+          repository: aosp-mirror/kernel_common
+          ref: android11-5.4
+          path: kernel54
+          fetch-depth: 1
+      - name: Verify 5.4 kernel
         run: |
-          cd $GITHUB_WORKSPACE
-          git clone --depth=1 -b android11-5.4 https://github.com/aosp-mirror/kernel_common.git kernel54
-          test -d kernel54 || (echo "::error::Failed to clone 5.4 kernel" && exit 1)
+          test -d $GITHUB_WORKSPACE/kernel54 || (echo "::error::Failed to clone 5.4 kernel" && exit 1)
+          ls $GITHUB_WORKSPACE/kernel54/Makefile >/dev/null || (echo "::error::kernel54/Makefile missing" && exit 1)
 
       - name: Clone 5.10 kernel
         run: |
