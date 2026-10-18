@@ -31,7 +31,7 @@ jobs:
           cd $GITHUB_WORKSPACE
           git clone --depth=1 --filter=blob:none --sparse -b v5.10 https://github.com/torvalds/linux.git linux510
           cd linux510
-          git sparse-checkout set drivers/scsi/ufs drivers/clk/qcom drivers/interconnect/qcom include/dt-bindings
+          git sparse-checkout set drivers/scsi/ufs drivers/clk/qcom drivers/interconnect/qcom include/dt-bindings include/linux/power_supply.h
 
       - name: Overlay 5.10 core into 5.4
         run: |
@@ -40,7 +40,13 @@ jobs:
           cp -rvf linux510/drivers/clk/qcom/* kernel54/drivers/clk/qcom/
           cp -rvf linux510/drivers/interconnect/qcom/* kernel54/drivers/interconnect/qcom/
           cp -rvf linux510/include/dt-bindings/* kernel54/include/dt-bindings/
-          curl --fail --show-error --location --max-time 60 -o kernel54/include/linux/power_supply.h "https://raw.githubusercontent.com/torvalds/linux/v5.10/include/linux/power_supply.h" || (echo "::error::Failed to download power_supply.h" && exit 1)
+          # 优先从本地 sparse-checkout 拷贝（避免 raw.githubusercontent 429 限流）
+          if [ -f linux510/include/linux/power_supply.h ]; then
+            cp -f linux510/include/linux/power_supply.h kernel54/include/linux/power_supply.h
+          else
+            curl --fail --show-error --location --retry 3 --max-time 60 -o kernel54/include/linux/power_supply.h "https://raw.githubusercontent.com/torvalds/linux/v5.10/include/linux/power_supply.h" || \
+            curl --fail --show-error --location --retry 3 --max-time 60 -o kernel54/include/linux/power_supply.h "https://cdn.jsdelivr.net/gh/torvalds/linux@v5.10/include/linux/power_supply.h" || (echo "::error::Failed to fetch power_supply.h" && exit 1)
+          fi
 
       - name: Fetch 4.19 peripherals
         run: |
