@@ -68,7 +68,7 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           
-          # 改用单行 echo 生成，完美避开 YAML 缩进错误
+          # 补齐外援指出的缺失接口，全部走 200+ 的独立编号
           echo '#ifndef _XIAOMI_419_COMPAT_H' > port_4_19/xiaomi_compat.h
           echo '#define _XIAOMI_419_COMPAT_H' >> port_4_19/xiaomi_compat.h
           echo '#include <linux/power_supply.h>' >> port_4_19/xiaomi_compat.h
@@ -77,39 +77,41 @@ jobs:
           echo '#include <linux/timekeeping.h>' >> port_4_19/xiaomi_compat.h
           echo '#define POWER_SUPPLY_CHARGE_TYPE_TAPER 200' >> port_4_19/xiaomi_compat.h
           echo '#define POWER_SUPPLY_TYPE_PARALLEL 201' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_CHIP_OK 202' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_CHARGING_ENABLED 203' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_USB_CURRENT_NOW 204' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_USB_VOLTAGE_NOW 205' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_HIZ_MODE 206' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_CHARGE_DONE 207' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_MAIN_FCC_MAX 208' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_ARTI_VBUS_ENABLE 209' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_TERMINATION_CURRENT 210' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_INPUT_VOLTAGE_REGULATION 211' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_FORCE_MAIN_ICL 212' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_RECHARGE_VBAT 213' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_FFC_TERMINATION_CURRENT 214' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_FCC_DELTA 215' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_SHUTDOWN_DELAY 216' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_CAPACITY_RAW 217' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_SOC_DECIMAL 218' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_SOC_DECIMAL_RATE 219' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_COLD_THERMAL_LEVEL 220' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_RESISTANCE_ID 221' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_UPDATE_NOW 222' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_RESISTANCE 223' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_FASTCHARGE_MODE 224' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_SOH 225' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_INPUT_CURRENT_SETTLED 226' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_PARALLEL_MODE 227' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_PARALLEL_OUTPUT_MODE 228' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PL_OUTPUT_VPH 229' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_REAL_TYPE 230' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PL_USBIN_USBIN 231' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PL_USBIN_USBIN_EXT 232' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_HVDCP3_TYPE 233' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_DIV_2_MODE 234' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_TYPE_BMS 202' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_CHIP_OK 203' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_CHARGING_ENABLED 204' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_USB_CURRENT_NOW 205' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_USB_VOLTAGE_NOW 206' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_HIZ_MODE 207' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_CHARGE_DONE 208' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_MAIN_FCC_MAX 209' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_ARTI_VBUS_ENABLE 210' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_TERMINATION_CURRENT 211' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_INPUT_VOLTAGE_REGULATION 212' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_FORCE_MAIN_ICL 213' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_RECHARGE_VBAT 214' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_FFC_TERMINATION_CURRENT 215' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_FCC_DELTA 216' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_SHUTDOWN_DELAY 217' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_CAPACITY_RAW 218' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_SOC_DECIMAL 219' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_SOC_DECIMAL_RATE 220' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_COLD_THERMAL_LEVEL 221' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_RESISTANCE_ID 222' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_UPDATE_NOW 223' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_RESISTANCE 224' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_FASTCHARGE_MODE 225' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_FORCE_RECHARGE 226' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_SOH 227' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_INPUT_CURRENT_SETTLED 228' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_PARALLEL_MODE 229' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_PARALLEL_OUTPUT_MODE 230' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PL_OUTPUT_VPH 231' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_REAL_TYPE 232' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PL_USBIN_USBIN 233' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PL_USBIN_USBIN_EXT 234' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_HVDCP3_TYPE 235' >> port_4_19/xiaomi_compat.h
+          echo '#define POWER_SUPPLY_PROP_DIV_2_MODE 236' >> port_4_19/xiaomi_compat.h
           echo '#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' >> port_4_19/xiaomi_compat.h
           echo '#endif' >> port_4_19/xiaomi_compat.h
 
@@ -142,7 +144,7 @@ jobs:
             cd $GITHUB_WORKSPACE/kernel54
           done
           
-          # 终极防线：剔除 battery.c 和 bq25790_charger.c，只编电量计和充电泵
+          # 依然保留最稳妥的 bq27z561 和 max77932，踢掉 battery 和 bq25790
           cd drivers/port_4_19/cas_qcom
           rm -f Makefile
           echo 'obj-y += bq27z561_fg.o' > Makefile
@@ -192,5 +194,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add Image_cas_5.4_core
-          git commit -m "ci: add 5.4 core image (safest subset)" || true
+          git commit -m "ci: add 5.4 core image (all enums patched)" || true
           git push || true
