@@ -24,6 +24,7 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE
           git clone --depth=1 -b android11-5.4 https://github.com/aosp-mirror/kernel_common.git kernel54
+          test -d kernel54 || (echo "::error::Failed to clone 5.4 kernel" && exit 1)
 
       - name: Clone 5.10 kernel
         run: |
@@ -39,37 +40,39 @@ jobs:
           cp -rvf linux510/drivers/clk/qcom/* kernel54/drivers/clk/qcom/
           cp -rvf linux510/drivers/interconnect/qcom/* kernel54/drivers/interconnect/qcom/
           cp -rvf linux510/include/dt-bindings/* kernel54/include/dt-bindings/
-          curl -sL --max-time 60 -o kernel54/include/linux/power_supply.h "https://raw.githubusercontent.com/torvalds/linux/v5.10/include/linux/power_supply.h"
+          curl --fail --show-error --location --max-time 60 -o kernel54/include/linux/power_supply.h "https://raw.githubusercontent.com/torvalds/linux/v5.10/include/linux/power_supply.h" || (echo "::error::Failed to download power_supply.h" && exit 1)
 
       - name: Fetch 4.19 peripherals
         run: |
+          set -Eeuo pipefail
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           for dir in "drivers/input/misc/aw8697_haptic:aw8697_haptic" "drivers/power/supply/cas_qcom:cas_qcom"; do
             SRC=$(echo $dir | cut -d: -f1)
             DEST="port_4_19/$(echo $dir | cut -d: -f2)"
             mkdir -p "$DEST"
-            API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$SRC?ref=cas-q-oss"
-            curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
-              curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
+            curl --fail --show-error --silent --location --max-time 60 -o api.json "https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$SRC?ref=cas-q-oss" || (echo "::error::Failed to fetch API for $SRC" && exit 1)
+            python3 -c "import json; [print(i['name']) for i in json.load(open('api.json')) if i['type'] == 'file']" | while read f; do
+              curl --fail --show-error --silent --location --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" || (echo "::error::Failed to download $f" && exit 1)
             done
+            rm -f api.json
           done
 
       - name: Fetch qcom headers
         run: |
+          set -Eeuo pipefail
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           mkdir -p include/linux/qpnp
           for h in qpnp-revid.h qpnp-smb5.h qpnp-fg.h qpnp-adc.h qpnp-qg.h qpnp-smb2.h qpnp-flash.h; do
-            curl -sL --max-time 60 -o "include/linux/qpnp/$h" "$BASE/include/linux/qpnp/$h" 2>/dev/null || true
+            curl --fail --show-error --silent --location --max-time 60 -o "include/linux/qpnp/$h" "$BASE/include/linux/qpnp/$h" || true
           done
-          curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
+          curl --fail --show-error --silent --location --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" || true
 
-      - name: Patch 4.19 peripherals
+      - name: Patch 4.19 APIs
         run: |
+          set -Eeuo pipefail
           cd $GITHUB_WORKSPACE/kernel54
-          
-          # 1. 修复旧 API
           find port_4_19 -name "*.c" -exec sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' {} \;
           find port_4_19 -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} \;
           for file in $(find port_4_19 -name "*.c"); do
@@ -78,96 +81,49 @@ jobs:
             fi
           done
 
-          # 2. 采用 GPT 的顶级思路：直接把兼容宏塞进 battery.c 的最前面
-          python3 - << 'PYEOF2'
-          import pathlib
-          path = pathlib.Path('drivers/port_4_19/cas_qcom/battery.c')
-          if path.exists():
-              source = path.read_text()
-              block = '''/* Compatibility definitions for Xiaomi 4.19 parallel charging */
-          #ifndef POWER_SUPPLY_PL_OUTPUT_VPH
-          #define POWER_SUPPLY_PL_OUTPUT_VPH 3
-          #endif
-          #ifndef POWER_SUPPLY_PL_USBIN_USBIN
-          #define POWER_SUPPLY_PL_USBIN_USBIN 1
-          #endif
-          #ifndef POWER_SUPPLY_PL_USBIN_USBIN_EXT
-          #define POWER_SUPPLY_PL_USBIN_USBIN_EXT 2
-          #endif
-          #ifndef POWER_SUPPLY_PL_USBMID_USBMID
-          #define POWER_SUPPLY_PL_USBMID_USBMID 4
-          #endif
-
-          '''
-              if 'POWER_SUPPLY_PL_USBIN_USBIN' not in source:
-                  source = block + source
-                  path.write_text(source)
-                  print("✅ Patched battery.c with parallel charging macros.")
-          PYEOF2
-          
-          # 3. 暴力补齐 power_supply 缺失枚举（追加到 5.10 头文件末尾）
-          cat >> include/linux/power_supply.h << 'HEADER_EOF'
-          #define POWER_SUPPLY_PROP_PARALLEL_MODE 999
-          #define POWER_SUPPLY_PROP_PARALLEL_OUTPUT_MODE 998
-          #define POWER_SUPPLY_PROP_REAL_TYPE 997
-          #define POWER_SUPPLY_PROP_MIN_ICL 996
-          #define POWER_SUPPLY_PROP_INPUT_CURRENT_SETTLED 995
-          #define POWER_SUPPLY_PROP_CHIP_OK 994
-          #define POWER_SUPPLY_PROP_CHARGING_ENABLED 993
-          #define POWER_SUPPLY_PROP_USB_CURRENT_NOW 992
-          #define POWER_SUPPLY_PROP_USB_VOLTAGE_NOW 991
-          #define POWER_SUPPLY_PROP_HIZ_MODE 990
-          #define POWER_SUPPLY_PROP_CHARGE_DONE 989
-          #define POWER_SUPPLY_PROP_MAIN_FCC_MAX 988
-          #define POWER_SUPPLY_PROP_ARTI_VBUS_ENABLE 987
-          #define POWER_SUPPLY_PROP_TERMINATION_CURRENT 986
-          #define POWER_SUPPLY_PROP_HW_CURRENT_MAX 985
-          #define POWER_SUPPLY_PROP_FCC_DELTA 984
-          #define POWER_SUPPLY_TYPE_USB_HVDCP_3 983
-          #define POWER_SUPPLY_TYPE_USB_HVDCP_3P5 982
-          #define POWER_SUPPLY_TYPE_USB_FLOAT 981
-          #define POWER_SUPPLY_TYPE_USB_HVDCP 980
-          #define POWER_SUPPLY_TYPE_WIRELESS 979
-          #define POWER_SUPPLY_TYPE_USB_PD 978
-          #define POWER_SUPPLY_CHARGE_TYPE_TAPER 977
-          HEADER_EOF
-
-      - name: HARDCODE Makefiles
+      - name: Integrate into kernel tree
         run: |
+          set -Eeuo pipefail
           cd $GITHUB_WORKSPACE/kernel54
           mkdir -p drivers/port_4_19
-          if [ -d port_4_19 ]; then
-            cp -rf port_4_19/* drivers/port_4_19/
-            rm -rf port_4_19
-          fi
+          cp -rf port_4_19/* drivers/port_4_19/
+          rm -rf port_4_19
           
+          # 把原生 Kconfig 引入系统
           if ! grep -q "port_4_19" drivers/Makefile; then
             echo 'obj-y += port_4_19/' >> drivers/Makefile
           fi
-
-          mkdir -p drivers/port_4_19/ufs drivers/port_4_19/clk_qcom drivers/port_4_19/ic_qcom drivers/port_4_19/cas_qcom drivers/port_4_19/aw8697_haptic
-
-          for d in ufs clk_qcom ic_qcom cas_qcom; do
-            cd drivers/port_4_19/$d
-            rm -f Makefile
-            for f in *.c; do [ -f "$f" ] && echo "obj-y += ${f%.c}.o" >> Makefile; done
-            touch Makefile
-            cd $GITHUB_WORKSPACE/kernel54
-          done
+          if ! grep -q "port_4_19" drivers/Kconfig; then
+            echo 'source "drivers/port_4_19/Kconfig"' >> drivers/Kconfig
+          fi
           
-          echo 'obj-y += aw8697.o' > drivers/port_4_19/aw8697_haptic/Makefile
-
-          echo 'obj-y += aw8697_haptic/' > drivers/port_4_19/Makefile
-          echo 'obj-y += cas_qcom/' >> drivers/port_4_19/Makefile
-          echo 'obj-y += ufs/' >> drivers/port_4_19/Makefile
-          echo 'obj-y += clk_qcom/' >> drivers/port_4_19/Makefile
-          echo 'obj-y += ic_qcom/' >> drivers/port_4_19/Makefile
+          # port_4_19/Kconfig 引入子目录
+          cat > drivers/port_4_19/Kconfig << 'EOF'
+          source "drivers/port_4_19/cas_qcom/Kconfig"
+          source "drivers/port_4_19/aw8697_haptic/Kconfig"
+          EOF
+          
+          # port_4_19/Makefile 自动进入子目录
+          cat > drivers/port_4_19/Makefile << 'EOF'
+          obj-y += cas_qcom/
+          obj-y += aw8697_haptic/
+          EOF
 
       - name: Config and Build
         run: |
-          set +e
+          set -Eeuo pipefail
           cd $GITHUB_WORKSPACE/kernel54
+          touch build.log
+          
           make ARCH=arm64 gki_defconfig
+          
+          # 精确打开三个外设开关，关闭包含 battery.c 的 SMB5 开关
+          echo 'CONFIG_CHARGER_BQ25790=y' >> .config
+          echo 'CONFIG_FUEL_GAUGE_BQ28Z610=y' >> .config
+          echo 'CONFIG_CP_MAX77932=y' >> .config
+          echo '# CONFIG_QPNP_SMB5_CAS is not set' >> .config
+          
+          echo 'CONFIG_INPUT_AW8697_HAPTIC=y' >> .config
           echo 'CONFIG_I2C=y' >> .config
           echo 'CONFIG_POWER_SUPPLY=y' >> .config
           echo 'CONFIG_INPUT=y' >> .config
@@ -177,26 +133,30 @@ jobs:
           echo '# CONFIG_HID_PLAYSTATION is not set' >> .config
           make ARCH=arm64 olddefconfig
           
+          set +e
           make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j4 Image > build.log 2>&1
+          RESULT=$?
           
-          if [ $? -ne 0 ]; then
+          if [ $RESULT -ne 0 ]; then
             echo "=== 编译失败，提取最后 50 行日志 ==="
             grep -i -B 2 -A 5 "error:" build.log | head -80
             exit 1
           fi
+          echo "✅ 编译成功！"
 
       - name: Upload Image
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Image_cas_core
           path: kernel54/arch/arm64/boot/Image
           retention-days: 30
 
-      - name: Commit Image
-        run: |
-          cp kernel54/arch/arm64/boot/Image ./Image_cas_5.4_core
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add Image_cas_5.4_core
-          git commit -m "ci: add 5.4 core image" || true
-          git push || true
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: kernel54/build.log
+          retention-days: 7
+          if-no-files-found: ignore
