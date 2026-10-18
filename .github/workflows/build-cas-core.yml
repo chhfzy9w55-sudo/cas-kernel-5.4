@@ -68,7 +68,7 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           
-          # 补齐外援指出的缺失接口，全部走 200+ 的独立编号
+          # 采用单行 echo 补全缺失的宏，彻底告别 YAML 缩进报错
           echo '#ifndef _XIAOMI_419_COMPAT_H' > port_4_19/xiaomi_compat.h
           echo '#define _XIAOMI_419_COMPAT_H' >> port_4_19/xiaomi_compat.h
           echo '#include <linux/power_supply.h>' >> port_4_19/xiaomi_compat.h
@@ -144,7 +144,7 @@ jobs:
             cd $GITHUB_WORKSPACE/kernel54
           done
           
-          # 依然保留最稳妥的 bq27z561 和 max77932，踢掉 battery 和 bq25790
+          # 依然剔除 battery.c 和 bq25790_charger.c
           cd drivers/port_4_19/cas_qcom
           rm -f Makefile
           echo 'obj-y += bq27z561_fg.o' > Makefile
@@ -171,6 +171,10 @@ jobs:
           echo 'CONFIG_SCSI=y' >> .config
           echo 'CONFIG_SCSI_UFSHCD=y' >> .config
           echo '# CONFIG_HID_PLAYSTATION is not set' >> .config
+          
+          # 核心修复：强行关闭 UFS 的内联加密功能，避开 blk_keyslot_manager 结构体缺失
+          echo '# CONFIG_SCSI_UFS_CRYPTO is not set' >> .config
+          
           make ARCH=arm64 olddefconfig
           
           make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j4 Image > build.log 2>&1
@@ -194,5 +198,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add Image_cas_5.4_core
-          git commit -m "ci: add 5.4 core image (all enums patched)" || true
+          git commit -m "ci: add 5.4 core image (disabled ufs crypto)" || true
           git push || true
