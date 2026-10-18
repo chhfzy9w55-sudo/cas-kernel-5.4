@@ -1,7 +1,7 @@
 name: build-cas-core
-
 on:
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -11,6 +11,7 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
       - name: Install deps
         run: |
           sudo apt-get update
@@ -22,6 +23,18 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE
           git clone --depth=1 -b 5.4 https://github.com/rofikkerneldev/qgki_kona_5.4.git kernel54
+
+      - name: Fetch headers and Suture
+        run: |
+          cd $GITHUB_WORKSPACE/kernel54
+          BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
+          # 1. download 4.19 power_supply.h
+          curl -sL --max-time 60 -o /tmp/ps_4_19.h "$BASE/include/linux/power_supply.h"
+          # 2. overlay 5.10 header over the 5.4 one
+          cp -v $GITHUB_WORKSPACE/linux510/include/linux/power_supply.h include/linux/power_supply.h 2>/dev/null || curl -sL -o include/linux/power_supply.h "https://raw.githubusercontent.com/torvalds/linux/v5.10/include/linux/power_supply.h"
+          # 3. suture: inject missing 4.19 symbols as #define macros
+          python3 $GITHUB_WORKSPACE/.github/suture.py
+
       - name: Fetch 4.19 peripherals
         run: |
           cd $GITHUB_WORKSPACE/kernel54
@@ -35,6 +48,7 @@ jobs:
               curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
             done
           done
+
       - name: Patch 4.19 peripherals
         run: |
           cd $GITHUB_WORKSPACE/kernel54
@@ -52,26 +66,22 @@ jobs:
           if ! grep -q "port_cas" drivers/Makefile; then
             echo 'obj-y += port_cas/' >> drivers/Makefile
           fi
-          
           echo 'obj-y += aw8697_haptic/' > drivers/port_cas/Makefile
           echo 'obj-y += cas_qcom/' >> drivers/port_cas/Makefile
-          
           echo 'obj-y += aw8697.o' > drivers/port_cas/aw8697_haptic/Makefile
-          
           cd drivers/port_cas/cas_qcom
           rm -f Makefile
           for f in *.c; do [ -f "$f" ] && echo "obj-y += ${f%.c}.o" >> Makefile; done
           cd $GITHUB_WORKSPACE/kernel54
+
       - name: Config and Build
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          
           if [ -f arch/arm64/configs/vendor/kona-perf_defconfig ]; then
               make ARCH=arm64 vendor/kona-perf_defconfig
           elif [ -f arch/arm64/configs/gki_defconfig ]; then
               make ARCH=arm64 gki_defconfig
           fi
-          
           echo 'CONFIG_I2C=y' >> .config
           echo 'CONFIG_POWER_SUPPLY=y' >> .config
           echo 'CONFIG_INPUT=y' >> .config
@@ -80,10 +90,6 @@ jobs:
           echo 'CONFIG_SCSI_UFSHCD=y' >> .config
           echo '# CONFIG_HID_PLAYSTATION is not set' >> .config
           make ARCH=arm64 olddefconfig
-          
-          echo "=== 检查关键配置 ==="
-          grep -E "CONFIG_(I2C|POWER_SUPPLY|INPUT|INPUT_MISC|SCSI|SCSI_UFSHCD)=" .config | head -10
-          
           set +e
           set -o pipefail
           make ARCH=arm64 \
@@ -98,7 +104,6 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             -j2 Image > build.log 2>&1
           build_status=$?
-          
           if [ "$build_status" -ne 0 ]; then
               echo "=== Build failed: exit code $build_status ==="
               echo "=== Last 120 lines of build.log ==="
@@ -113,6 +118,7 @@ jobs:
               echo "Build returned success, but Image is missing or empty."
               exit 1
           }
+
       - name: Upload Image
         if: success()
         uses: actions/upload-artifact@v4
