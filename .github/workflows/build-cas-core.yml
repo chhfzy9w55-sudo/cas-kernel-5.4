@@ -23,7 +23,7 @@ jobs:
       - name: Clone 5.4 kernel
         run: |
           cd $GITHUB_WORKSPACE
-          git clone --depth=1 -b android11-5.4 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git kernel54
+          git clone --depth=1 -b android11-5.4 https://github.com/aosp-mirror/kernel_common.git kernel54
 
       - name: Clone 5.10 kernel
         run: |
