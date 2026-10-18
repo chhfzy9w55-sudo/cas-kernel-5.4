@@ -27,59 +27,57 @@ jobs:
         run: |
           set -euo pipefail
           cd kernel54
-          mkdir -p port_cas_temp
+          mkdir -p port_cas_temp/cas_qcom
           
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
+          
+          # 1. 拉取 voter 框架的头文件和源码（拯救链接错误的命脉）
+          curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h"
+          curl -sL --max-time 60 -o port_cas_temp/cas_qcom/pmic-voter.c "$BASE/drivers/power/supply/qcom/pmic-voter.c"
+          
+          # 2. 拉取外设
           for dir in "drivers/input/misc/aw8697_haptic:aw8697_haptic" "drivers/power/supply/cas_qcom:cas_qcom"; do
             SRC=$(echo $dir | cut -d: -f1)
             DEST="port_cas_temp/$(echo $dir | cut -d: -f2)"
             mkdir -p "$DEST"
             API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$SRC?ref=cas-q-oss"
             curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
-              curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
+              # 避免覆盖刚刚拉下来的 pmic-voter.c
+              if [ "$f" != "pmic-voter.c" ] || [ "$DEST" != "port_cas_temp/cas_qcom" ]; then
+                curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
+              fi
             done
           done
           
-          # 强制移动到 drivers/ 下，防止 make 找不到
+          # 强制移动到 drivers/ 下
           rm -rf drivers/port_cas
           mv port_cas_temp drivers/port_cas
           
           # 验证核心文件是否真实存在
           test -s drivers/port_cas/cas_qcom/battery.c || exit 1
-          test -s drivers/port_cas/cas_qcom/bq27z561_fg.c || exit 1
+          test -s drivers/port_cas/cas_qcom/pmic-voter.c || exit 1
 
       - name: Suture power_supply.h
         run: |
           set -euo pipefail
           cd kernel54
-          
-          # 备份原始的 5.4 头文件
           cp include/linux/power_supply.h include/linux/power_supply.h.bak
-          
-          # 拉取 4.19 的头文件进行差异对比
           curl -sL --max-time 60 -o /tmp/ps_4_19.h "https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss/include/linux/power_supply.h"
           
           python3 << 'PYEOF'
           import re
           from pathlib import Path
-          
           target_h = Path("include/linux/power_supply.h")
           content = target_h.read_text()
           cas = Path('/tmp/ps_4_19.h').read_text()
-          
-          # 提取所有 POWER_SUPPLY_ 枚举
           all_symbols = set(re.findall(r'\b(POWER_SUPPLY_[A-Z0-9_]+)\b', cas))
           missing = [s for s in all_symbols if s not in content]
-          
           if missing:
-              insertion = "\n\n/* Injected from 4.19 for cas_qcom compatibility */\n"
+              insertion = "\n\n/* Injected from 4.19 */\n"
               for i, m in enumerate(missing):
                   insertion += f"#ifndef {m}\n#define {m} (0x8000 + {i})\n#endif\n"
               last_endif = content.rfind('#endif')
               target_h.write_text(content[:last_endif] + insertion + content[last_endif:])
-              print(f"Injected {len(missing)} missing macros.")
-          else:
-              print("No missing macros found.")
           PYEOF
 
       - name: Patch API compatibility
@@ -107,7 +105,9 @@ jobs:
           
           printf 'obj-y += aw8697_haptic/\nobj-y += cas_qcom/\n' > drivers/port_cas/Makefile
           printf 'obj-y += aw8697.o\n' > drivers/port_cas/aw8697_haptic/Makefile
-          printf 'obj-y += battery.o\nobj-y += bq27z561_fg.o\n' > drivers/port_cas/cas_qcom/Makefile
+          
+          # 关键：把 pmic-voter.o 加进编译列表
+          printf 'obj-y += battery.o\nobj-y += bq27z561_fg.o\nobj-y += pmic-voter.o\n' > drivers/port_cas/cas_qcom/Makefile
 
       - name: Build kernel
         run: |
@@ -144,7 +144,6 @@ jobs:
           name: cas-kernel-build-log
           path: kernel54/build.log
           if-no-files-found: warn
-          retention-days: 7
 
       - name: Upload Image
         if: success()
