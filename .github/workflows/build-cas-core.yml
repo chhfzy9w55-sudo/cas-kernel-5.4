@@ -68,9 +68,55 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           
-          # 生成纯净的本地兼容头（只处理 API，不碰不安全的枚举）
-          echo -e '#ifndef _XIAOMI_419_COMPAT_H\n#define _XIAOMI_419_COMPAT_H\n\n#include <linux/power_supply.h>\n#include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)\n\n#endif' > port_4_19/xiaomi_compat.h
+          # 1. 生成纯净隔离的兼容头，全部使用 200+ 的独立编号，绝对不映射 5.4 原生属性
+          cat > port_4_19/xiaomi_compat.h << 'HEADER_EOF'
+#ifndef _XIAOMI_419_COMPAT_H
+#define _XIAOMI_419_COMPAT_H
 
+#include <linux/power_supply.h>
+#include <linux/time64.h>
+#include <linux/ktime.h>
+#include <linux/timekeeping.h>
+
+#define POWER_SUPPLY_CHARGE_TYPE_TAPER 200
+#define POWER_SUPPLY_PROP_CHIP_OK 201
+#define POWER_SUPPLY_PROP_CHARGING_ENABLED 202
+#define POWER_SUPPLY_PROP_USB_CURRENT_NOW 203
+#define POWER_SUPPLY_PROP_USB_VOLTAGE_NOW 204
+#define POWER_SUPPLY_PROP_HIZ_MODE 205
+#define POWER_SUPPLY_PROP_CHARGE_DONE 206
+#define POWER_SUPPLY_PROP_MAIN_FCC_MAX 207
+#define POWER_SUPPLY_PROP_ARTI_VBUS_ENABLE 208
+#define POWER_SUPPLY_PROP_TERMINATION_CURRENT 209
+#define POWER_SUPPLY_PROP_INPUT_VOLTAGE_REGULATION 210
+#define POWER_SUPPLY_PROP_FORCE_MAIN_ICL 211
+#define POWER_SUPPLY_PROP_RECHARGE_VBAT 212
+#define POWER_SUPPLY_PROP_FFC_TERMINATION_CURRENT 213
+#define POWER_SUPPLY_PROP_FCC_DELTA 214
+#define POWER_SUPPLY_PROP_SHUTDOWN_DELAY 215
+#define POWER_SUPPLY_PROP_CAPACITY_RAW 216
+#define POWER_SUPPLY_PROP_SOC_DECIMAL 217
+#define POWER_SUPPLY_PROP_SOC_DECIMAL_RATE 218
+#define POWER_SUPPLY_PROP_COLD_THERMAL_LEVEL 219
+#define POWER_SUPPLY_PROP_RESISTANCE_ID 220
+#define POWER_SUPPLY_PROP_UPDATE_NOW 221
+#define POWER_SUPPLY_PROP_RESISTANCE 222
+#define POWER_SUPPLY_PROP_FASTCHARGE_MODE 223
+#define POWER_SUPPLY_PROP_SOH 224
+#define POWER_SUPPLY_PROP_INPUT_CURRENT_SETTLED 225
+#define POWER_SUPPLY_PROP_PARALLEL_MODE 226
+#define POWER_SUPPLY_PROP_PARALLEL_OUTPUT_MODE 227
+#define POWER_SUPPLY_PL_OUTPUT_VPH 228
+#define POWER_SUPPLY_PROP_REAL_TYPE 229
+#define POWER_SUPPLY_PL_USBIN_USBIN 230
+#define POWER_SUPPLY_PL_USBIN_USBIN_EXT 231
+
+#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)
+
+#endif
+HEADER_EOF
+
+          # 2. 注入兼容头并修复老 API
           for file in $(find port_4_19 -name "*.c"); do
             sed -i '1i #include "../xiaomi_compat.h"' "$file"
             sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' "$file"
@@ -100,7 +146,7 @@ jobs:
             cd $GITHUB_WORKSPACE/kernel54
           done
           
-          # 精准控制 cas_qcom 的编译，彻底剔除 battery.c
+          # 精准控制 cas_qcom 的编译，彻底剔除 battery.c，只留基础充电子系统
           cd drivers/port_4_19/cas_qcom
           rm -f Makefile
           echo 'obj-y += bq25790_charger.o' > Makefile
@@ -151,5 +197,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add Image_cas_5.4_core
-          git commit -m "ci: add 5.4 core image (skip battery.c)" || true
+          git commit -m "ci: add 5.4 core image (isolated enums, no battery.c)" || true
           git push || true
