@@ -28,7 +28,7 @@ jobs:
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
           for dir in "drivers/input/misc/aw8697_haptic:aw8697_haptic" "drivers/power/supply/cas_qcom:cas_qcom"; do
             SRC=$(echo $dir | cut -d: -f1)
-            DEST="port_cas/$(echo $dir | cut -d: -f2)"
+            DEST="drivers/port_cas/$(echo $dir | cut -d: -f2)"
             mkdir -p "$DEST"
             API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$SRC?ref=cas-q-oss"
             curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
@@ -38,9 +38,9 @@ jobs:
       - name: Patch 4.19 peripherals
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          find port_cas -name "*.c" -exec sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' {} \;
-          find port_cas -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} \;
-          for file in $(find port_cas -name "*.c"); do
+          find drivers/port_cas -name "*.c" -exec sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' {} \;
+          find drivers/port_cas -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} \;
+          for file in $(find drivers/port_cas -name "*.c"); do
             if grep -q "do_gettimeofday" "$file"; then
               sed -i '1i #include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' "$file"
             fi
@@ -53,12 +53,12 @@ jobs:
             echo 'obj-y += port_cas/' >> drivers/Makefile
           fi
           
-          echo 'obj-y += aw8697_haptic/' > port_cas/Makefile
-          echo 'obj-y += cas_qcom/' >> port_cas/Makefile
+          echo 'obj-y += aw8697_haptic/' > drivers/port_cas/Makefile
+          echo 'obj-y += cas_qcom/' >> drivers/port_cas/Makefile
           
-          echo 'obj-y += aw8697.o' > port_cas/aw8697_haptic/Makefile
+          echo 'obj-y += aw8697.o' > drivers/port_cas/aw8697_haptic/Makefile
           
-          cd port_cas/cas_qcom
+          cd drivers/port_cas/cas_qcom
           rm -f Makefile
           for f in *.c; do [ -f "$f" ] && echo "obj-y += ${f%.c}.o" >> Makefile; done
           cd $GITHUB_WORKSPACE/kernel54
