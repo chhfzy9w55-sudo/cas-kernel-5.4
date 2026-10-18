@@ -30,6 +30,7 @@ jobs:
           cd $GITHUB_WORKSPACE
           git clone --depth=1 --filter=blob:none --sparse -b v5.10 https://github.com/torvalds/linux.git linux510
           cd linux510
+          # 关键修复：拉取完整的 include/linux 目录，不再拉单文件
           git sparse-checkout set drivers/scsi/ufs drivers/clk/qcom drivers/interconnect/qcom include/dt-bindings include/linux
 
       - name: Overlay 5.10 core into 5.4
@@ -39,7 +40,9 @@ jobs:
           cp -rvf linux510/drivers/clk/qcom/* kernel54/drivers/clk/qcom/
           cp -rvf linux510/drivers/interconnect/qcom/* kernel54/drivers/interconnect/qcom/
           cp -rvf linux510/include/dt-bindings/* kernel54/include/dt-bindings/
-          cp -f linux510/include/linux/power_supply.h kernel54/include/linux/power_supply.h
+          
+          # 此时 5.10 的 include/linux 肯定存在了，直接覆盖！
+          cp -rvf linux510/include/linux/power_supply.h kernel54/include/linux/power_supply.h
 
       - name: Fetch 4.19 peripherals
         run: |
@@ -55,7 +58,7 @@ jobs:
             done
           done
 
-      - name: Fetch qcom headers and merge enums safely
+      - name: Fetch qcom headers
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
@@ -64,39 +67,11 @@ jobs:
             curl -sL --max-time 60 -o "include/linux/qpnp/$h" "$BASE/include/linux/qpnp/$h" 2>/dev/null || true
           done
           curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
-          
-          curl -sL --max-time 60 -o /tmp/ps_419.h "$BASE/include/linux/power_supply.h"
-          
-          # 提取枚举成员并追加到 5.10 的头文件末尾
-          python3 - << 'PYEOF'
-import re
-with open('include/linux/power_supply.h', 'r') as f:
-    ps_510 = f.read()
-with open('/tmp/ps_419.h', 'r') as f:
-    ps_419 = f.read()
 
-# 精确匹配 POWER_SUPPLY_PROP_ 开头的枚举成员
-pat = r'(POWER_SUPPLY_PROP_[A-Z0-9_]+)'
-props_419 = set(re.findall(pat, ps_419))
-props_510 = set(re.findall(pat, ps_510))
-missing = sorted(list(props_419 - props_510))
-
-if missing:
-    # 找到 5.10 头文件中最后一个枚举或宏定义的位置，直接在文件最末尾追加
-    ps_510 += '\n/* cas vendor extensions merged from 4.19 */\nenum cas_vendor_power_supply_ext {\n'
-    for m in missing:
-        ps_510 += f'\t{m},\n' # 不赋值，让编译器顺着 5.10 最后一个值往后排，绝对不冲突
-    ps_510 += '};\n'
-    with open('include/linux/power_supply.h', 'w') as f:
-        f.write(ps_510)
-    print(f"Merged {len(missing)} missing enums.")
-else:
-    print("No missing enums.")
-PYEOF
-
-      - name: Patch 4.19 peripherals
+      - name: Patch 4.19 peripherals and Inject Enums
         run: |
           cd $GITHUB_WORKSPACE/kernel54
+          # 1. 修复 4.19 老 API
           find port_4_19 -name "*.c" -exec sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' {} \;
           find port_4_19 -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} \;
           for file in $(find port_4_19 -name "*.c"); do
@@ -104,6 +79,34 @@ PYEOF
               sed -i '1i #include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' "$file"
             fi
           done
+
+          # 2. 兜底：如果 5.10 头文件仍缺 4.19 专有枚举，用 Python 强行注入
+          python3 - << 'PYEOF'
+import re
+with open('include/linux/power_supply.h', 'r') as f:
+    content = f.read()
+
+need = [
+ "POWER_SUPPLY_PROP_SHUTDOWN_DELAY", "POWER_SUPPLY_PROP_CAPACITY_RAW",
+ "POWER_SUPPLY_PROP_SOC_DECIMAL", "POWER_SUPPLY_PROP_SOC_DECIMAL_RATE",
+ "POWER_SUPPLY_PROP_COLD_THERMAL_LEVEL", "POWER_SUPPLY_PROP_RESISTANCE_ID",
+ "POWER_SUPPLY_PROP_UPDATE_NOW", "POWER_SUPPLY_PROP_CHIP_OK",
+ "POWER_SUPPLY_PROP_RESISTANCE", "POWER_SUPPLY_PROP_FASTCHARGE_MODE",
+ "POWER_SUPPLY_PROP_TERMINATION_CURRENT", "POWER_SUPPLY_PROP_FFC_TERMINATION_CURRENT",
+ "POWER_SUPPLY_PROP_RECHARGE_VBAT", "POWER_SUPPLY_PROP_CHARGE_DONE",
+ "POWER_SUPPLY_PROP_SOH"
+]
+missing = [n for n in need if n not in content]
+if missing:
+    # 插入到 POWER_SUPPLY_PROP_MAX 之前
+    block = "\n".join("    " + n + "," for n in missing) + "\n"
+    content = content.replace("POWER_SUPPLY_PROP_MAX,", block + "    POWER_SUPPLY_PROP_MAX,")
+    with open('include/linux/power_supply.h', 'w') as f:
+        f.write(content)
+    print("Injected missing enums:", missing)
+else:
+    print("All enums present in 5.10 header.")
+PYEOF
 
       - name: HARDCODE Makefiles
         run: |
@@ -129,6 +132,7 @@ PYEOF
           done
           
           echo 'obj-y += aw8697.o' > drivers/port_4_19/aw8697_haptic/Makefile
+
           echo 'obj-y += aw8697_haptic/' > drivers/port_4_19/Makefile
           echo 'obj-y += cas_qcom/' >> drivers/port_4_19/Makefile
           echo 'obj-y += ufs/' >> drivers/port_4_19/Makefile
@@ -147,6 +151,12 @@ PYEOF
           echo 'CONFIG_SCSI=y' >> .config
           echo 'CONFIG_SCSI_UFSHCD=y' >> .config
           echo '# CONFIG_HID_PLAYSTATION is not set' >> .config
+          
+          # 解决 kconfig EOF 报错：给新选项赋默认值
+          echo 'CONFIG_LTO_NONE=y' >> .config
+          echo '# CONFIG_RELR is not set' >> .config
+          echo '# CONFIG_SHADOW_CALL_STACK is not set' >> .config
+          
           make ARCH=arm64 olddefconfig
           
           make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j4 Image > build.log 2>&1
@@ -170,5 +180,5 @@ PYEOF
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add Image_cas_5.4_core
-          git commit -m "ci: add 5.4 core image (safely merged enums)" || true
+          git commit -m "ci: add 5.4 core image" || true
           git push || true
