@@ -68,51 +68,38 @@ jobs:
       - name: Patch 4.19 peripherals
         run: |
           cd $GITHUB_WORKSPACE/kernel54
-          
-          # 1. 修复 API
           find port_4_19 -name "*.c" -exec sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' {} \;
           find port_4_19 -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} \;
-          
           for file in $(find port_4_19 -name "*.c"); do
             if grep -q "do_gettimeofday" "$file"; then
               sed -i '1i #include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' "$file"
             fi
           done
           
-          # 2. 暴力追加缺失的枚举和宏到 5.10 的 power_supply.h 文件末尾
-          cat >> include/linux/power_supply.h << 'HEADER_EOF'
-
-/* ======= Force Inject missing Xiaomi 4.19 enums ======= */
-#define POWER_SUPPLY_PROP_PARALLEL_MODE 999
-#define POWER_SUPPLY_PROP_PARALLEL_OUTPUT_MODE 998
-#define POWER_SUPPLY_PROP_REAL_TYPE 997
-#define POWER_SUPPLY_PROP_MIN_ICL 996
-#define POWER_SUPPLY_PROP_INPUT_CURRENT_SETTLED 995
-#define POWER_SUPPLY_PROP_CHIP_OK 994
-#define POWER_SUPPLY_PROP_CHARGING_ENABLED 993
-#define POWER_SUPPLY_PROP_USB_CURRENT_NOW 992
-#define POWER_SUPPLY_PROP_USB_VOLTAGE_NOW 991
-#define POWER_SUPPLY_PROP_HIZ_MODE 990
-#define POWER_SUPPLY_PROP_CHARGE_DONE 989
-#define POWER_SUPPLY_PROP_MAIN_FCC_MAX 988
-#define POWER_SUPPLY_PROP_ARTI_VBUS_ENABLE 987
-#define POWER_SUPPLY_PROP_TERMINATION_CURRENT 986
-#define POWER_SUPPLY_PROP_HW_CURRENT_MAX 985
-#define POWER_SUPPLY_PROP_FCC_DELTA 984
-#define POWER_SUPPLY_TYPE_USB_HVDCP_3 983
-#define POWER_SUPPLY_TYPE_USB_HVDCP_3P5 982
-#define POWER_SUPPLY_TYPE_USB_FLOAT 981
-#define POWER_SUPPLY_TYPE_USB_HVDCP 980
-#define POWER_SUPPLY_TYPE_WIRELESS 979
-#define POWER_SUPPLY_TYPE_USB_PD 978
-#define POWER_SUPPLY_CHARGE_TYPE_TAPER 977
-
-#define POWER_SUPPLY_PL_USBIN_USBIN 1
-#define POWER_SUPPLY_PL_USBIN_USBIN_EXT 2
-#define POWER_SUPPLY_PL_OUTPUT_VPH 3
-#define POWER_SUPPLY_PL_USBMID_USBMID 4
-/* ====================================================== */
-HEADER_EOF
+          printf '\n/* Force Inject missing Xiaomi 4.19 enums */\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_PARALLEL_MODE 999\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_PARALLEL_OUTPUT_MODE 998\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_REAL_TYPE 997\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_MIN_ICL 996\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_INPUT_CURRENT_SETTLED 995\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_CHIP_OK 994\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_CHARGING_ENABLED 993\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_USB_CURRENT_NOW 992\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_USB_VOLTAGE_NOW 991\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_HIZ_MODE 990\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_CHARGE_DONE 989\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_MAIN_FCC_MAX 988\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_ARTI_VBUS_ENABLE 987\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_TERMINATION_CURRENT 986\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_HW_CURRENT_MAX 985\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_PROP_FCC_DELTA 984\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_TYPE_USB_HVDCP_3 983\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_TYPE_USB_HVDCP_3P5 982\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_TYPE_USB_FLOAT 981\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_TYPE_USB_HVDCP 980\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_TYPE_WIRELESS 979\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_TYPE_USB_PD 978\n' >> include/linux/power_supply.h
+          printf '#define POWER_SUPPLY_CHARGE_TYPE_TAPER 977\n' >> include/linux/power_supply.h
 
       - name: HARDCODE Makefiles
         run: |
