@@ -1,8 +1,6 @@
 name: build-cas-core
-
-on:
-  workflow_dispatch:
-
+'on':
+  workflow_dispatch: {}
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -10,75 +8,31 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+    - name: Checkout repo
+      uses: actions/checkout@v4
+    - name: Install deps
+      run: 'sudo apt-get update
 
-      - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils
-          sudo apt-get install -y clang-14 lld-14 llvm-14
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+        sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils
 
-      - name: Clone 5.4 kernel
-        run: |
-          cd $GITHUB_WORKSPACE
-          git clone --depth=1 -b android11-5.4 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git kernel54
+        sudo apt-get install -y clang-14 lld-14 llvm-14
 
-      - name: Clone 5.10 core drivers
-        run: |
-          cd $GITHUB_WORKSPACE
-          git clone --depth=1 --filter=blob:none --sparse -b v5.10 https://github.com/torvalds/linux.git linux510
-          cd linux510
-          git sparse-checkout set drivers/scsi/ufs drivers/clk/qcom drivers/interconnect/qcom include/dt-bindings
+        sudo apt-get install -y gcc-aarch64-linux-gnu'
+    - name: Clone qgki_kona_5.4
+      run: 'cd $GITHUB_WORKSPACE
 
-      - name: Overlay 5.10 core into 5.4
-        run: |
-          cd $GITHUB_WORKSPACE
-          cp -rvf linux510/drivers/scsi/ufs/* kernel54/drivers/scsi/ufs/
-          cp -rvf linux510/drivers/clk/qcom/* kernel54/drivers/clk/qcom/
-          cp -rvf linux510/drivers/interconnect/qcom/* kernel54/drivers/interconnect/qcom/
-          cp -rvf linux510/include/dt-bindings/* kernel54/include/dt-bindings/
-
-      - name: Config and Build
-        run: |
-          set +e
-          cd $GITHUB_WORKSPACE/kernel54
-          make ARCH=arm64 gki_defconfig
-          echo 'CONFIG_I2C=y' >> .config
-          echo 'CONFIG_SCSI=y' >> .config
-          echo 'CONFIG_SCSI_UFSHCD=y' >> .config
-          echo 'CONFIG_SCSI_UFS_QCOM=y' >> .config
-          echo '# CONFIG_HID_PLAYSTATION is not set' >> .config
-          echo '# CONFIG_SCSI_UFS_CRYPTO is not set' >> .config
-          make ARCH=arm64 olddefconfig
-          
-          echo "=== 强制检查配置是否生效 ==="
-          if ! grep -q 'CONFIG_SCSI_UFS_QCOM=y' .config; then
-            echo "::error::CONFIG_SCSI_UFS_QCOM=y 没有生效！"
-            exit 1
-          fi
-          
-          make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j4 Image > build.log 2>&1
-          
-          if [ $? -ne 0 ]; then
-            echo "=== 编译失败，提取最后 50 行日志 ==="
-            grep -i -B 2 -A 5 "error:" build.log | head -80
-            exit 1
-          fi
-
-      - name: Upload Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: Image_cas_core
-          path: kernel54/arch/arm64/boot/Image
-          retention-days: 30
-
-      - name: Commit Image
-        run: |
-          cp kernel54/arch/arm64/boot/Image ./Image_cas_5.4_core
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add Image_cas_5.4_core
-          git commit -m "ci: pure core image (no peripherals)" || true
-          git push || true
+        git clone --depth=1 -b 5.4 https://github.com/rofikkerneldev/qgki_kona_5.4.git kernel54'
+    - name: Fetch cas peripherals
+      run: "cd $GITHUB_WORKSPACE/kernel54\nBASE=\"https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss\"\nfor entry in \"drivers/input/misc/aw8697_haptic:aw8697_haptic\" \"drivers/power/supply/cas_qcom:cas_qcom\"; do\n  SRC=${entry%%:*}\n  DEST=port_cas/${entry##*:}\n  mkdir -p \"$DEST\"\n  API_URL=\"https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$SRC?ref=cas-q-oss\"\n  curl -sL \"$API_URL\" | grep '\"name\"' | awk -F'\"' '{print $4}' | while read f; do\n    curl -sL --max-time 60 -o \"$DEST/$f\" \"$BASE/$SRC/$f\" 2>/dev/null\n  done\ndone"
+    - name: Patch cas peripherals
+      run: "cd $GITHUB_WORKSPACE/kernel54\nfind port_cas -name '*.c' -exec sed -i 's/wakeup_source_register(\"/wakeup_source_register(NULL, \"/g' {} \\;\nfind port_cas -name '*.c' -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} \\;\nfor file in $(find port_cas -name '*.c'); do\n  if grep -q \"do_gettimeofday\" \"$file\"; then\n    sed -i '1i #include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' \"$file\"\n  fi\ndone"
+    - name: HARDCODE Makefiles
+      run: "cd $GITHUB_WORKSPACE/kernel54\nif ! grep -q \"port_cas\" drivers/Makefile; then\n  echo 'obj-y += port_cas/' >> drivers/Makefile\nfi\necho 'obj-y += aw8697_haptic/' > port_cas/Makefile\necho 'obj-y += cas_qcom/' >> port_cas/Makefile\necho 'obj-y += aw8697.o' > port_cas/aw8697_haptic/Makefile\ncd port_cas/cas_qcom\nrm -f Makefile\nfor f in *.c; do [ -f \"$f\" ] && echo \"obj-y += ${f%.c}.o\" >> Makefile; done"
+    - name: Config and Build
+      run: "set +e\ncd $GITHUB_WORKSPACE/kernel54\n# 用 QGKI 树自带的 defconfig（gki_defconfig 一定存在，kona-perf 可能不存在）\nif [ -f arch/arm64/configs/vendor/kona-perf_defconfig ]; then\n  make ARCH=arm64 vendor/kona-perf_defconfig\nelif [ -f arch/arm64/configs/gki_defconfig ]; then\n  make ARCH=arm64 gki_defconfig\nfi\necho 'CONFIG_I2C=y' >> .config\necho 'CONFIG_POWER_SUPPLY=y' >> .config\necho 'CONFIG_INPUT=y' >> .config\necho 'CONFIG_INPUT_MISC=y' >> .config\necho 'CONFIG_SCSI=y' >> .config\necho 'CONFIG_SCSI_UFSHCD=y' >> .config\nmake ARCH=arm64 olddefconfig\nmake ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j4 Image > build.log 2>&1\nif [ $? -ne 0 ]; then\n  echo \"=== 编译失败，提取关键报错 ===\"\n  grep -i -B 2 -A 5 \"error:\" build.log | head -80\n  exit 1\nfi"
+    - name: Upload Image
+      uses: actions/upload-artifact@v4
+      with:
+        name: Image_cas_core
+        path: kernel54/arch/arm64/boot/Image
+        retention-days: 30
