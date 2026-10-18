@@ -48,12 +48,17 @@ jobs:
               curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
             done
           done
+          # fetch missing ln8282.h header dependency for idtp9415.c
+          mkdir -p include/linux/power
+          curl -sL --max-time 60 -o include/linux/power/ln8282.h "$BASE/include/linux/power/ln8282.h"
 
       - name: Patch 4.19 peripherals
         run: |
           cd $GITHUB_WORKSPACE/kernel54
           find drivers/port_cas -name "*.c" -exec sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' {} \;
           find drivers/port_cas -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} \;
+          # idtp9415.h is a local sibling; use quotes include so the compiler finds it
+          sed -i 's|#include <idtp9415.h>|#include "idtp9415.h"|g' drivers/port_cas/cas_qcom/idtp9415.c
           for file in $(find drivers/port_cas -name "*.c"); do
             if grep -q "do_gettimeofday" "$file"; then
               sed -i '1i #include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' "$file"
