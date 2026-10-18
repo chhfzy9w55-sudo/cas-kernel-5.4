@@ -40,142 +40,24 @@ jobs:
           cp -rvf linux510/drivers/interconnect/qcom/* kernel54/drivers/interconnect/qcom/
           cp -rvf linux510/include/dt-bindings/* kernel54/include/dt-bindings/
 
-      - name: Fetch 4.19 peripherals
-        run: |
-          cd $GITHUB_WORKSPACE/kernel54
-          BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          for dir in "drivers/input/misc/aw8697_haptic:aw8697_haptic" "drivers/power/supply/cas_qcom:cas_qcom"; do
-            SRC=$(echo $dir | cut -d: -f1)
-            DEST="port_4_19/$(echo $dir | cut -d: -f2)"
-            mkdir -p "$DEST"
-            API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$SRC?ref=cas-q-oss"
-            curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
-              curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
-            done
-          done
-
-      - name: Fetch qcom headers
-        run: |
-          cd $GITHUB_WORKSPACE/kernel54
-          BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          mkdir -p include/linux/qpnp
-          for h in qpnp-revid.h qpnp-smb5.h qpnp-fg.h qpnp-adc.h qpnp-qg.h qpnp-smb2.h qpnp-flash.h; do
-            curl -sL --max-time 60 -o "include/linux/qpnp/$h" "$BASE/include/linux/qpnp/$h" 2>/dev/null || true
-          done
-          curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h" 2>/dev/null || true
-
-      - name: Build Local Driver Compat Layer
-        run: |
-          cd $GITHUB_WORKSPACE/kernel54
-          
-          # 采用单行 echo 补全缺失的宏，彻底告别 YAML 缩进报错
-          echo '#ifndef _XIAOMI_419_COMPAT_H' > port_4_19/xiaomi_compat.h
-          echo '#define _XIAOMI_419_COMPAT_H' >> port_4_19/xiaomi_compat.h
-          echo '#include <linux/power_supply.h>' >> port_4_19/xiaomi_compat.h
-          echo '#include <linux/time64.h>' >> port_4_19/xiaomi_compat.h
-          echo '#include <linux/ktime.h>' >> port_4_19/xiaomi_compat.h
-          echo '#include <linux/timekeeping.h>' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_CHARGE_TYPE_TAPER 200' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_TYPE_PARALLEL 201' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_TYPE_BMS 202' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_CHIP_OK 203' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_CHARGING_ENABLED 204' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_USB_CURRENT_NOW 205' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_USB_VOLTAGE_NOW 206' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_HIZ_MODE 207' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_CHARGE_DONE 208' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_MAIN_FCC_MAX 209' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_ARTI_VBUS_ENABLE 210' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_TERMINATION_CURRENT 211' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_INPUT_VOLTAGE_REGULATION 212' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_FORCE_MAIN_ICL 213' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_RECHARGE_VBAT 214' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_FFC_TERMINATION_CURRENT 215' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_FCC_DELTA 216' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_SHUTDOWN_DELAY 217' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_CAPACITY_RAW 218' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_SOC_DECIMAL 219' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_SOC_DECIMAL_RATE 220' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_COLD_THERMAL_LEVEL 221' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_RESISTANCE_ID 222' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_UPDATE_NOW 223' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_RESISTANCE 224' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_FASTCHARGE_MODE 225' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_FORCE_RECHARGE 226' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_SOH 227' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_INPUT_CURRENT_SETTLED 228' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_PARALLEL_MODE 229' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_PARALLEL_OUTPUT_MODE 230' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PL_OUTPUT_VPH 231' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_REAL_TYPE 232' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PL_USBIN_USBIN 233' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PL_USBIN_USBIN_EXT 234' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_HVDCP3_TYPE 235' >> port_4_19/xiaomi_compat.h
-          echo '#define POWER_SUPPLY_PROP_DIV_2_MODE 236' >> port_4_19/xiaomi_compat.h
-          echo '#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' >> port_4_19/xiaomi_compat.h
-          echo '#endif' >> port_4_19/xiaomi_compat.h
-
-          for file in $(find port_4_19 -name "*.c"); do
-            sed -i '1i #include "../xiaomi_compat.h"' "$file"
-            sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' "$file"
-            sed -i 's|asm/uaccess.h|linux/uaccess.h|g' "$file"
-          done
-
-      - name: HARDCODE Makefiles
-        run: |
-          cd $GITHUB_WORKSPACE/kernel54
-          mkdir -p drivers/port_4_19
-          if [ -d port_4_19 ]; then
-            cp -rf port_4_19/* drivers/port_4_19/
-            rm -rf port_4_19
-          fi
-          
-          if ! grep -q "port_4_19" drivers/Makefile; then
-            echo 'obj-y += port_4_19/' >> drivers/Makefile
-          fi
-
-          mkdir -p drivers/port_4_19/ufs drivers/port_4_19/clk_qcom drivers/port_4_19/ic_qcom drivers/port_4_19/cas_qcom drivers/port_4_19/aw8697_haptic
-
-          for d in ufs clk_qcom ic_qcom; do
-            cd drivers/port_4_19/$d
-            rm -f Makefile
-            for f in *.c; do [ -f "$f" ] && echo "obj-y += ${f%.c}.o" >> Makefile; done
-            touch Makefile
-            cd $GITHUB_WORKSPACE/kernel54
-          done
-          
-          # 依然剔除 battery.c 和 bq25790_charger.c
-          cd drivers/port_4_19/cas_qcom
-          rm -f Makefile
-          echo 'obj-y += bq27z561_fg.o' > Makefile
-          echo 'obj-y += max77932.o' >> Makefile
-          cd $GITHUB_WORKSPACE/kernel54
-          
-          echo 'obj-y += aw8697.o' > drivers/port_4_19/aw8697_haptic/Makefile
-
-          echo 'obj-y += aw8697_haptic/' > drivers/port_4_19/Makefile
-          echo 'obj-y += cas_qcom/' >> drivers/port_4_19/Makefile
-          echo 'obj-y += ufs/' >> drivers/port_4_19/Makefile
-          echo 'obj-y += clk_qcom/' >> drivers/port_4_19/Makefile
-          echo 'obj-y += ic_qcom/' >> drivers/port_4_19/Makefile
-
       - name: Config and Build
         run: |
           set +e
           cd $GITHUB_WORKSPACE/kernel54
           make ARCH=arm64 gki_defconfig
           echo 'CONFIG_I2C=y' >> .config
-          echo 'CONFIG_POWER_SUPPLY=y' >> .config
-          echo 'CONFIG_INPUT=y' >> .config
-          echo 'CONFIG_INPUT_MISC=y' >> .config
           echo 'CONFIG_SCSI=y' >> .config
           echo 'CONFIG_SCSI_UFSHCD=y' >> .config
+          echo 'CONFIG_SCSI_UFS_QCOM=y' >> .config
           echo '# CONFIG_HID_PLAYSTATION is not set' >> .config
-          
-          # 核心修复：强行关闭 UFS 的内联加密功能，避开 blk_keyslot_manager 结构体缺失
           echo '# CONFIG_SCSI_UFS_CRYPTO is not set' >> .config
-          
           make ARCH=arm64 olddefconfig
+          
+          echo "=== 强制检查配置是否生效 ==="
+          if ! grep -q 'CONFIG_SCSI_UFS_QCOM=y' .config; then
+            echo "::error::CONFIG_SCSI_UFS_QCOM=y 没有生效！"
+            exit 1
+          fi
           
           make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j4 Image > build.log 2>&1
           
@@ -198,5 +80,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add Image_cas_5.4_core
-          git commit -m "ci: add 5.4 core image (disabled ufs crypto)" || true
+          git commit -m "ci: pure core image (no peripherals)" || true
           git push || true
