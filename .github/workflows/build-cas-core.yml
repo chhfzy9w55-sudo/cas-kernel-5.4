@@ -84,6 +84,7 @@ jobs:
           echo "=== 检查关键配置 ==="
           grep -E "CONFIG_(I2C|POWER_SUPPLY|INPUT|INPUT_MISC|SCSI|SCSI_UFSHCD)=" .config | head -10
           
+          set +e
           set -o pipefail
           make ARCH=arm64 \
             CC=clang-14 \
