@@ -3,138 +3,239 @@ name: build-cas-core
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
-    permissions:
-      contents: write
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install deps
+      - name: Install dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils
-          sudo apt-get install -y clang-14 lld-14 llvm-14
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y \
+            build-essential bc bison flex \
+            libssl-dev libelf-dev device-tree-compiler \
+            python3 python3-pip xz-utils curl ca-certificates \
+            clang-14 lld-14 llvm-14 \
+            gcc-aarch64-linux-gnu
 
-      - name: Clone 5.4 kernel
+      - name: Clone Linux 5.4 kernel
+        shell: bash
         run: |
-          cd $GITHUB_WORKSPACE
-          git clone --depth=1 -b 5.4 https://github.com/rofikkerneldev/qgki_kona_5.4.git kernel54
+          set -euo pipefail
+          git clone --depth=1 -b 5.4 \
+            https://github.com/rofikkerneldev/qgki_kona_5.4.git \
+            "$GITHUB_WORKSPACE/kernel54"
 
-      - name: Fetch headers and Suture
+      - name: Fetch and validate 4.19 peripheral sources
+        shell: bash
+        env:
+          SOURCE_REPO: MiCode/Xiaomi_Kernel_OpenSource
+          SOURCE_REF: cas-q-oss
         run: |
-          cd $GITHUB_WORKSPACE/kernel54
-          BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          curl -sL --max-time 60 -o /tmp/ps_4_19.h "$BASE/include/linux/power_supply.h"
-          curl -sL -o include/linux/power_supply.h "https://raw.githubusercontent.com/torvalds/linux/v5.10/include/linux/power_supply.h"
-          
-          python3 << 'PYEOF'
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel54"
+
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import urllib.request
+          import urllib.parse
+
+          repo = os.environ["SOURCE_REPO"]
+          ref = os.environ["SOURCE_REF"]
+
+          sources = {
+              "drivers/input/misc/aw8697_haptic": pathlib.Path("port_cas/aw8697_haptic"),
+              "drivers/power/supply/cas_qcom": pathlib.Path("port_cas/cas_qcom"),
+          }
+          headers = {"User-Agent": "cas-kernel-build"}
+
+          def get_json(url):
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req, timeout=60) as response:
+                  return json.load(response)
+
+          def download_tree(remote_dir, local_dir):
+              api_url = f"https://api.github.com/repos/{repo}/contents/{urllib.parse.quote(remote_dir, safe='/')}?ref={urllib.parse.quote(ref)}"
+              entries = get_json(api_url)
+              local_dir.mkdir(parents=True, exist_ok=True)
+              downloaded = []
+
+              for entry in entries:
+                  name = entry.get("name", "")
+                  kind = entry.get("type")
+                  if kind == "dir":
+                      downloaded.extend(download_tree(f"{remote_dir}/{name}", local_dir / name))
+                      continue
+                  if kind != "file": continue
+
+                  url = entry.get("download_url")
+                  target = local_dir / name
+                  request = urllib.request.Request(url, headers={"User-Agent": "cas-kernel-build"})
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      data = response.read()
+
+                  prefix = data[:512].lstrip().lower()
+                  if prefix.startswith(b"<!doctype html") or prefix.startswith(b"<html"):
+                      raise RuntimeError(f"HTML response instead of source: {remote_dir}/{name}")
+
+                  target.write_bytes(data)
+                  downloaded.append(target)
+              return downloaded
+
+          for remote, local in sources.items():
+              print(f"Fetching {remote}")
+              download_tree(remote, local)
+
+          required = [
+              pathlib.Path("port_cas/aw8697_haptic/aw8697.c"),
+              pathlib.Path("port_cas/cas_qcom/battery.c"),
+              pathlib.Path("port_cas/cas_qcom/bq27z561_fg.c"),
+          ]
+          for path in required:
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f"ERROR: Required source missing or empty: {path}")
+          print("Source validation passed.")
+          PY
+
+      - name: Apply targeted legacy API adaptations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel54"
+
+          # 1. 只补齐 4.19 缺失的枚举宏，不覆盖原版 5.4 头文件的结构体
+          curl -sL --max-time 60 -o /tmp/ps_4_19.h "https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss/include/linux/power_supply.h"
+          python3 <<'PY'
           import re
+          from pathlib import Path
+
+          target_h = Path("include/linux/power_supply.h")
+          content = target_h.read_text()
+
           with open('/tmp/ps_4_19.h') as f: cas = f.read()
-          with open('include/linux/power_supply.h') as f: current = f.read()
+          
           all_symbols = set(re.findall(r'\b(POWER_SUPPLY_[A-Z0-9_]+)\b', cas))
-          missing = [s for s in all_symbols if s not in current]
+          missing = [s for s in all_symbols if s not in content]
+          
           if missing:
               insertion = "\n\n/* Injected from 4.19 for cas_qcom compatibility */\n"
               for i, m in enumerate(missing):
                   insertion += f"#ifndef {m}\n#define {m} (0x8000 + {i})\n#endif\n"
-              last_endif = current.rfind('#endif')
-              new_content = current[:last_endif] + insertion + current[last_endif:]
-              with open('include/linux/power_supply.h', 'w') as f: f.write(new_content)
-          PYEOF
+              last_endif = content.rfind('#endif')
+              new_content = content[:last_endif] + insertion + content[last_endif:]
+              target_h.write_text(new_content)
+              print(f"Injected {len(missing)} missing POWER_SUPPLY_* macros.")
+          PY
 
-      - name: Fetch 4.19 peripherals
-        run: |
-          cd $GITHUB_WORKSPACE/kernel54
-          BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          for dir in "drivers/input/misc/aw8697_haptic:aw8697_haptic" "drivers/power/supply/cas_qcom:cas_qcom"; do
-            SRC=$(echo $dir | cut -d: -f1)
-            DEST="port_cas/$(echo $dir | cut -d: -f2)"
-            mkdir -p "$DEST"
-            API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$SRC?ref=cas-q-oss"
-            curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
-              curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
-            done
-          done
+          # 2. 应用 API 兼容性补丁
+          python3 <<'PY'
+          from pathlib import Path
+          root = Path("port_cas")
+          for path in root.rglob("*.c"):
+              text = path.read_text(errors="replace")
+              text = text.replace('wakeup_source_register("', 'wakeup_source_register(NULL, "')
+              text = text.replace("asm/uaccess.h", "linux/uaccess.h")
+              if "do_gettimeofday" in text and "ktime_get_real_ts64" not in text:
+                  preamble = "#include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n"
+                  preamble += "#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)\n"
+                  text = preamble + text
+              path.write_text(text)
+          PY
 
-      - name: Patch 4.19 peripherals
+      - name: Configure peripheral Makefiles
+        shell: bash
         run: |
-          cd $GITHUB_WORKSPACE/kernel54
-          find port_cas -name "*.c" -exec sed -i 's/wakeup_source_register("/wakeup_source_register(NULL, "/g' {} \;
-          find port_cas -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} \;
-          for file in $(find port_cas -name "*.c"); do
-            if grep -q "do_gettimeofday" "$file"; then
-              sed -i '1i #include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)' "$file"
-            fi
-          done
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel54"
 
-      - name: HARDCODE Makefiles
-        run: |
-          cd $GITHUB_WORKSPACE/kernel54
-          if ! grep -q "port_cas" drivers/Makefile; then
-            echo 'obj-y += port_cas/' >> drivers/Makefile
-          fi
-          
-          echo 'obj-y += aw8697_haptic/' > port_cas/Makefile
-          echo 'obj-y += cas_qcom/' >> port_cas/Makefile
-          echo 'obj-y += aw8697.o' > port_cas/aw8697_haptic/Makefile
-          
-          cd port_cas/cas_qcom
-          rm -f Makefile
-          # 断臂求生：只编译 battery.o 和 bq27z561_fg.o，彻底剔除无线充和快充
-          echo "obj-y += battery.o" > Makefile
-          echo "obj-y += bq27z561_fg.o" >> Makefile
-          cd $GITHUB_WORKSPACE/kernel54
+          grep -q 'port_cas' drivers/Makefile || echo 'obj-y += port_cas/' >> drivers/Makefile
+          printf 'obj-y += aw8697_haptic/\nobj-y += cas_qcom/\n' > port_cas/Makefile
+          printf 'obj-y += aw8697.o\n' > port_cas/aw8697_haptic/Makefile
+          printf 'obj-y += battery.o\nobj-y += bq27z561_fg.o\n' > port_cas/cas_qcom/Makefile
 
-      - name: Config and Build
+      - name: Configure and build kernel
+        shell: bash
         run: |
-          cd $GITHUB_WORKSPACE/kernel54
+          # 这里严格使用 set -euo pipefail，一旦 make 失败直接中断并抛出错误码
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel54"
+
           if [ -f arch/arm64/configs/vendor/kona-perf_defconfig ]; then
-              make ARCH=arm64 vendor/kona-perf_defconfig
-          elif [ -f arch/arm64/configs/gki_defconfig ]; then
-              make ARCH=arm64 gki_defconfig
+            make ARCH=arm64 vendor/kona-perf_defconfig
+          else
+            make ARCH=arm64 gki_defconfig
           fi
-          
-          echo 'CONFIG_I2C=y' >> .config
-          echo 'CONFIG_POWER_SUPPLY=y' >> .config
-          echo 'CONFIG_INPUT=y' >> .config
-          echo 'CONFIG_INPUT_MISC=y' >> .config
-          echo 'CONFIG_SCSI=y' >> .config
-          echo 'CONFIG_SCSI_UFSHCD=y' >> .config
-          echo '# CONFIG_HID_PLAYSTATION is not set' >> .config
+
+          bash scripts/config --enable I2C
+          bash scripts/config --enable POWER_SUPPLY
+          bash scripts/config --enable INPUT
+          bash scripts/config --enable INPUT_MISC
+          bash scripts/config --enable SCSI
+          bash scripts/config --enable SCSI_UFSHCD
+
           make ARCH=arm64 olddefconfig
-          
-          set +e
-          set -o pipefail
-          make ARCH=arm64 \
-            CC=clang-14 \
-            LD=ld.lld-14 \
-            AR=llvm-ar-14 \
-            NM=llvm-nm-14 \
-            OBJCOPY=llvm-objcopy-14 \
-            OBJDUMP=llvm-objdump-14 \
-            STRIP=llvm-strip-14 \
-            LLVM=1 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            -j2 Image > build.log 2>&1
 
-          build_status=$?
-          if [ "$build_status" -ne 0 ]; then
-              echo "=== Build failed: exit code $build_status ==="
-              tail -n 120 build.log
-              grep -in -B 2 -A 4 -E 'error:|fatal error:|No rule to make target|Killed|signal 9|out of memory|Error 1' build.log | head -n 120 || true
-              exit "$build_status"
+          {
+            echo "=== Kernel revision ==="
+            git rev-parse HEAD
+            echo "=== Build ==="
+            make ARCH=arm64 \
+              CC=clang-14 \
+              LD=ld.lld-14 \
+              AR=llvm-ar-14 \
+              NM=llvm-nm-14 \
+              OBJCOPY=llvm-objcopy-14 \
+              OBJDUMP=llvm-objdump-14 \
+              STRIP=llvm-strip-14 \
+              LLVM=1 \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              -j2 Image
+          } 2>&1 | tee build.log
+
+      - name: Show build diagnostics
+        if: always()
+        shell: bash
+        working-directory: ${{ github.workspace }}/kernel54
+        run: |
+          set -u
+          if [ ! -f build.log ]; then
+            echo "build.log does not exist."
+            exit 0
           fi
-          test -s arch/arm64/boot/Image || exit 1
 
-      - name: Upload Image
+          echo "=== Matching compiler/linker diagnostics ==="
+          grep -niE \
+            'error:|fatal error:|undefined reference|undefined symbol|No rule to make target|Error [0-9]+|FAILED:|ld\.lld:|clang: error:' \
+            build.log | tail -100 || true
+
+          echo "=== Last 200 lines ==="
+          tail -200 build.log
+
+      - name: Upload complete build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cas-kernel-build-log
+          path: kernel54/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload kernel Image
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Image_cas_core
           path: kernel54/arch/arm64/boot/Image
+          if-no-files-found: error
           retention-days: 30
