@@ -1,8 +1,11 @@
 name: build-cas-core
+
 on:
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -10,108 +13,112 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-      - name: Install dependencies
-        shell: bash
+
+      - name: Install deps
         run: |
-          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils curl ca-certificates clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu
-      - name: Clone Linux 5.4 kernel
-        shell: bash
+
+      - name: Clone 5.4 kernel
+        run: |
+          git clone --depth=1 -b 5.4 https://github.com/rofikkerneldev/qgki_kona_5.4.git kernel54
+
+      - name: Fetch and Move 4.19 sources
         run: |
           set -euo pipefail
-          git clone --depth=1 -b 5.4 https://github.com/rofikkerneldev/qgki_kona_5.4.git "$GITHUB_WORKSPACE/kernel54"
-      - name: Fetch and validate 4.19 sources
-        shell: bash
-        env:
-          SOURCE_REPO: MiCode/Xiaomi_Kernel_OpenSource
-          SOURCE_REF: cas-q-oss
+          cd kernel54
+          mkdir -p port_cas_temp
+          
+          BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
+          for dir in "drivers/input/misc/aw8697_haptic:aw8697_haptic" "drivers/power/supply/cas_qcom:cas_qcom"; do
+            SRC=$(echo $dir | cut -d: -f1)
+            DEST="port_cas_temp/$(echo $dir | cut -d: -f2)"
+            mkdir -p "$DEST"
+            API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$SRC?ref=cas-q-oss"
+            curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
+              curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
+            done
+          done
+          
+          # 强制移动到 drivers/ 下，防止 make 找不到
+          rm -rf drivers/port_cas
+          mv port_cas_temp drivers/port_cas
+          
+          # 验证核心文件是否真实存在
+          test -s drivers/port_cas/cas_qcom/battery.c || exit 1
+          test -s drivers/port_cas/cas_qcom/bq27z561_fg.c || exit 1
+
+      - name: Suture power_supply.h
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel54"
-          python3 <<'PY'
-          import json, os, pathlib, urllib.request, urllib.parse
-          repo = os.environ["SOURCE_REPO"]
-          ref = os.environ["SOURCE_REF"]
-          sources = {
-              "drivers/input/misc/aw8697_haptic": pathlib.Path("port_cas/aw8697_haptic"),
-              "drivers/power/supply/cas_qcom": pathlib.Path("port_cas/cas_qcom"),
-          }
-          def get_json(url):
-              req = urllib.request.Request(url, headers={"User-Agent": "ci"})
-              with urllib.request.urlopen(req, timeout=60) as response:
-                  return json.load(response)
-          def download_tree(remote_dir, local_dir):
-              api_url = f"https://api.github.com/repos/{repo}/contents/{urllib.parse.quote(remote_dir, safe='/')}?ref={urllib.parse.quote(ref)}"
-              entries = get_json(api_url)
-              local_dir.mkdir(parents=True, exist_ok=True)
-              for entry in entries:
-                  name = entry.get("name", "")
-                  kind = entry.get("type")
-                  if kind == "dir":
-                      download_tree(f"{remote_dir}/{name}", local_dir / name)
-                      continue
-                  if kind != "file": continue
-                  url = entry.get("download_url")
-                  target = local_dir / name
-                  req = urllib.request.Request(url, headers={"User-Agent": "ci"})
-                  with urllib.request.urlopen(req, timeout=60) as response:
-                      data = response.read()
-                  target.write_bytes(data)
-          for remote, local in sources.items():
-              download_tree(remote, local)
-          required = [pathlib.Path("port_cas/aw8697_haptic/aw8697.c"), pathlib.Path("port_cas/cas_qcom/battery.c"), pathlib.Path("port_cas/cas_qcom/bq27z561_fg.c")]
-          for path in required:
-              if not path.is_file() or path.stat().st_size == 0:
-                  raise SystemExit(f"ERROR: Missing {path}")
-          PY
-      - name: Apply patches
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel54"
-          curl -sL -o /tmp/ps_4_19.h "https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss/include/linux/power_supply.h"
-          python3 <<'PY'
+          cd kernel54
+          
+          # 备份原始的 5.4 头文件
+          cp include/linux/power_supply.h include/linux/power_supply.h.bak
+          
+          # 拉取 4.19 的头文件进行差异对比
+          curl -sL --max-time 60 -o /tmp/ps_4_19.h "https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss/include/linux/power_supply.h"
+          
+          python3 << 'PYEOF'
           import re
           from pathlib import Path
+          
           target_h = Path("include/linux/power_supply.h")
           content = target_h.read_text()
           cas = Path('/tmp/ps_4_19.h').read_text()
+          
+          # 提取所有 POWER_SUPPLY_ 枚举
           all_symbols = set(re.findall(r'\b(POWER_SUPPLY_[A-Z0-9_]+)\b', cas))
           missing = [s for s in all_symbols if s not in content]
+          
           if missing:
-              insertion = "\n\n/* Injected */\n"
+              insertion = "\n\n/* Injected from 4.19 for cas_qcom compatibility */\n"
               for i, m in enumerate(missing):
                   insertion += f"#ifndef {m}\n#define {m} (0x8000 + {i})\n#endif\n"
               last_endif = content.rfind('#endif')
               target_h.write_text(content[:last_endif] + insertion + content[last_endif:])
-          for path in Path("port_cas").rglob("*.c"):
-              text = path.read_text()
+              print(f"Injected {len(missing)} missing macros.")
+          else:
+              print("No missing macros found.")
+          PYEOF
+
+      - name: Patch API compatibility
+        run: |
+          set -euo pipefail
+          cd kernel54
+          python3 << 'PYEOF'
+          from pathlib import Path
+          for path in Path("drivers/port_cas").rglob("*.c"):
+              text = path.read_text(errors="replace")
               text = text.replace('wakeup_source_register("', 'wakeup_source_register(NULL, "')
               text = text.replace("asm/uaccess.h", "linux/uaccess.h")
               if "do_gettimeofday" in text and "ktime_get_real_ts64" not in text:
-                  text = "#include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)\n" + text
+                  preamble = "#include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n"
+                  preamble += "#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)\n"
+                  text = preamble + text
               path.write_text(text)
-          PY
+          PYEOF
+
       - name: Configure Makefiles
-        shell: bash
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel54"
+          cd kernel54
           grep -q 'port_cas' drivers/Makefile || echo 'obj-y += port_cas/' >> drivers/Makefile
-          printf 'obj-y += aw8697_haptic/\nobj-y += cas_qcom/\n' > port_cas/Makefile
-          printf 'obj-y += aw8697.o\n' > port_cas/aw8697_haptic/Makefile
-          printf 'obj-y += battery.o\nobj-y += bq27z561_fg.o\n' > port_cas/cas_qcom/Makefile
+          
+          printf 'obj-y += aw8697_haptic/\nobj-y += cas_qcom/\n' > drivers/port_cas/Makefile
+          printf 'obj-y += aw8697.o\n' > drivers/port_cas/aw8697_haptic/Makefile
+          printf 'obj-y += battery.o\nobj-y += bq27z561_fg.o\n' > drivers/port_cas/cas_qcom/Makefile
+
       - name: Build kernel
-        shell: bash
         run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel54"
+          set -o pipefail
+          cd kernel54
           if [ -f arch/arm64/configs/vendor/kona-perf_defconfig ]; then
             make ARCH=arm64 vendor/kona-perf_defconfig
           else
             make ARCH=arm64 gki_defconfig
           fi
+          
           bash scripts/config --enable I2C
           bash scripts/config --enable POWER_SUPPLY
           bash scripts/config --enable INPUT
@@ -119,15 +126,26 @@ jobs:
           bash scripts/config --enable SCSI
           bash scripts/config --enable SCSI_UFSHCD
           make ARCH=arm64 olddefconfig
+          
           make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j2 Image 2>&1 | tee build.log
+
       - name: Show errors
         if: always()
-        shell: bash
         run: |
-          cd "$GITHUB_WORKSPACE/kernel54"
+          cd kernel54
           if [ -f build.log ]; then
             grep -niE 'error:|fatal error:|undefined reference|undefined symbol|No rule|ld\.lld:|clang: error:' build.log | tail -50
           fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cas-kernel-build-log
+          path: kernel54/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Upload Image
         if: success()
         uses: actions/upload-artifact@v4
