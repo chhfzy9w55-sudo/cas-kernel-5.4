@@ -172,8 +172,8 @@ jobs:
             grep -E "^${cfg}=" .config || echo "WARN: ${cfg} not set!"
           done
 
-          # 6. 编译内核和 DTB
-          make -j2 Image dtbs 2>&1 | tee build.log
+          # 6. 编译内核和 DTB（抑制 clang-14 对 5.4 的 -Walign-mismatch 误报）
+          make -j2 KCFLAGS="-Wno-align-mismatch -Wno-error" Image dtbs 2>&1 | tee build.log
 
           # 验证 DTB 产物
           echo "=== DTB 产物 ==="
