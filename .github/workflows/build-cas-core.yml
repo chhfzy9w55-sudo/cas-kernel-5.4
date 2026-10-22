@@ -126,6 +126,15 @@ jobs:
           export HOSTCC=clang-14
           export HOSTLD=ld.lld-14
 
+          # Kconfig.include 硬编码检测 ld.lld，需要 symlink
+          sudo ln -sf $(which ld.lld-14) /usr/local/bin/ld.lld
+          sudo ln -sf $(which llvm-ar-14) /usr/local/bin/llvm-ar
+          sudo ln -sf $(which llvm-nm-14) /usr/local/bin/llvm-nm
+          sudo ln -sf $(which llvm-objcopy-14) /usr/local/bin/llvm-objcopy
+          sudo ln -sf $(which llvm-objdump-14) /usr/local/bin/llvm-objdump
+          sudo ln -sf $(which llvm-strip-14) /usr/local/bin/llvm-strip
+          sudo ln -sf $(which clang-14) /usr/local/bin/clang
+
           # 1. 加载 GKI 基础 defconfig
           make gki_defconfig
 
