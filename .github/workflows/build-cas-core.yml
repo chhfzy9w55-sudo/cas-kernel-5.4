@@ -127,7 +127,11 @@ jobs:
           bash scripts/config --enable SCSI_UFSHCD
           make ARCH=arm64 olddefconfig
           
-          make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j2 Image 2>&1 | tee build.log
+          make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j2 Image dtbs 2>&1 | tee build.log
+
+          # 验证 DTB 产物
+          echo "=== DTB 产物 ==="
+          find arch/arm64/boot/dts -name '*.dtb' -exec ls -la {} \; 2>/dev/null || echo "No DTB found"
 
       - name: Show errors
         if: always()
@@ -151,3 +155,10 @@ jobs:
         with:
           name: Image_cas_core
           path: kernel54/arch/arm64/boot/Image
+
+      - name: Upload DTB
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DTB_cas_core
+          path: kernel54/arch/arm64/boot/dts/qcom/*.dtb
