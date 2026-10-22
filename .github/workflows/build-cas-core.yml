@@ -108,6 +108,10 @@ jobs:
           
           # 关键：把 pmic-voter.o 加进编译列表
           printf 'obj-y += battery.o\nobj-y += bq27z561_fg.o\nobj-y += pmic-voter.o\n' > drivers/port_cas/cas_qcom/Makefile
+          
+          # 修复 drivers/clk/qcom/trace.h 包含路径问题
+          grep -q 'ccflags-y.*-I' drivers/clk/qcom/Makefile || \
+            sed -i '1i ccflags-y += -I$(src)' drivers/clk/qcom/Makefile
 
       - name: Build kernel
         run: |
