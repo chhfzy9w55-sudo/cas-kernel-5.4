@@ -116,6 +116,15 @@ jobs:
           export ARCH=arm64
           export LLVM=1
           export CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=clang-14
+          export LD=ld.lld-14
+          export AR=llvm-ar-14
+          export NM=llvm-nm-14
+          export OBJCOPY=llvm-objcopy-14
+          export OBJDUMP=llvm-objdump-14
+          export STRIP=llvm-strip-14
+          export HOSTCC=clang-14
+          export HOSTLD=ld.lld-14
 
           # 1. 加载 GKI 基础 defconfig
           make gki_defconfig
@@ -155,7 +164,7 @@ jobs:
           done
 
           # 6. 编译内核和 DTB
-          make CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 -j2 Image dtbs 2>&1 | tee build.log
+          make -j2 Image dtbs 2>&1 | tee build.log
 
           # 验证 DTB 产物
           echo "=== DTB 产物 ==="
