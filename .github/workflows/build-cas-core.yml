@@ -110,9 +110,9 @@ jobs:
           # 注意：pmic-voter.c 和 battery.c 已存在于 drivers/power/supply/qcom/ 原树中，不要重复编译
           printf 'obj-y += bq27z561_fg.o\n' > drivers/port_cas/cas_qcom/Makefile
           
-          # 修复 drivers/clk/qcom/trace.h 包含路径问题
-          grep -q 'ccflags-y.*-I' drivers/clk/qcom/Makefile || \
-            sed -i '1i ccflags-y += -I$(src)' drivers/clk/qcom/Makefile
+          # clk-debug.c 的 trace.h 在 clang-14 下 TRACE_INCLUDE_PATH="." 不生效
+          # clk-debug 是 debugfs 时钟测量功能，非启动必需，直接禁用
+          sed -i '/clk-qcom-y += clk-debug.o/s/^/# DISABLED: /' drivers/clk/qcom/Makefile
           
           # 禁用 gcc-wrapper.py forbidden warning 包装器（clang-14 与 5.4 QC 驱动有大量兼容性 warning）
           sed -i '/^CC.*gcc-wrapper\.py/c\CC\t\t= $(REAL_CC)' Makefile
