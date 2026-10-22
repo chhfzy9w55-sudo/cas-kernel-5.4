@@ -113,21 +113,49 @@ jobs:
         run: |
           set -o pipefail
           cd kernel54
-          if [ -f arch/arm64/configs/vendor/kona-perf_defconfig ]; then
-            make ARCH=arm64 vendor/kona-perf_defconfig
+          export ARCH=arm64
+          export LLVM=1
+          export CROSS_COMPILE=aarch64-linux-gnu-
+
+          # 1. 加载 GKI 基础 defconfig
+          make gki_defconfig
+
+          # 2. 合并 kona QGKI 平台配置片段
+          if [ -f arch/arm64/configs/vendor/kona_QGKI.config ]; then
+            scripts/kconfig/merge_config.sh -m -O "$PWD" .config arch/arm64/configs/vendor/kona_QGKI.config
           else
-            make ARCH=arm64 gki_defconfig
+            echo "WARNING: kona_QGKI.config not found, using GKI only"
           fi
-          
+
+          # 3. 追加外设配置
           bash scripts/config --enable I2C
           bash scripts/config --enable POWER_SUPPLY
           bash scripts/config --enable INPUT
           bash scripts/config --enable INPUT_MISC
-          bash scripts/config --enable SCSI
-          bash scripts/config --enable SCSI_UFSHCD
-          make ARCH=arm64 olddefconfig
-          
-          make ARCH=arm64 CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- -j2 Image dtbs 2>&1 | tee build.log
+
+          # 4. 最终配置解析
+          make olddefconfig
+
+          # 5. 验证关键平台配置是否生效
+          echo "=== 验证关键 CONFIG ==="
+          for cfg in \
+              CONFIG_SCSI_UFSHCD_QTI \
+              CONFIG_ARM_SMMU \
+              CONFIG_QCOM_RPMH \
+              CONFIG_QCOM_CLK_RPMH \
+              CONFIG_QCOM_SCM \
+              CONFIG_QCOM_SMEM \
+              CONFIG_PINCTRL_KONA \
+              CONFIG_INTERCONNECT_QCOM_KONA \
+              CONFIG_COMMON_CLK_QCOM \
+              CONFIG_SCSI_UFSHCD \
+              CONFIG_REGULATOR
+          do
+            grep -E "^${cfg}=" .config || echo "WARN: ${cfg} not set!"
+          done
+
+          # 6. 编译内核和 DTB
+          make CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 STRIP=llvm-strip-14 -j2 Image dtbs 2>&1 | tee build.log
 
           # 验证 DTB 产物
           echo "=== DTB 产物 ==="
