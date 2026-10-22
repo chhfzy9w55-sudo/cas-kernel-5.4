@@ -106,8 +106,9 @@ jobs:
           printf 'obj-y += aw8697_haptic/\nobj-y += cas_qcom/\n' > drivers/port_cas/Makefile
           printf 'obj-y += aw8697.o\n' > drivers/port_cas/aw8697_haptic/Makefile
           
-          # 关键：把 pmic-voter.o 加进编译列表
-          printf 'obj-y += battery.o\nobj-y += bq27z561_fg.o\nobj-y += pmic-voter.o\n' > drivers/port_cas/cas_qcom/Makefile
+          # 关键：把外设源码加入编译列表
+          # 注意：pmic-voter.c 和 battery.c 已存在于 drivers/power/supply/qcom/ 原树中，不要重复编译
+          printf 'obj-y += bq27z561_fg.o\n' > drivers/port_cas/cas_qcom/Makefile
           
           # 修复 drivers/clk/qcom/trace.h 包含路径问题
           grep -q 'ccflags-y.*-I' drivers/clk/qcom/Makefile || \
