@@ -152,16 +152,16 @@ jobs:
             if [ -f arch/arm64/configs/vendor/kona_QGKI.config ]; then
               scripts/kconfig/merge_config.sh -m -O out out/.config arch/arm64/configs/vendor/kona_QGKI.config
             fi
-            bash scripts/config --enable I2C --file out/.config
-            bash scripts/config --enable POWER_SUPPLY --file out/.config
-            bash scripts/config --enable INPUT --file out/.config
-            bash scripts/config --enable INPUT_MISC --file out/.config
-            bash scripts/config --enable MHI_BUS --file out/.config
-            bash scripts/config --enable SM_GCC_KONA --file out/.config
-            bash scripts/config --enable QCOM_PDC --file out/.config
-            bash scripts/config --enable SCSI_UFS_QCOM --file out/.config
-            bash scripts/config --enable SCSI_UFSHCD_PLATFORM --file out/.config
-            bash scripts/config --disable USB_PD_POLICY --file out/.config
+            bash scripts/config --file out/.config --enable I2C
+            bash scripts/config --file out/.config --enable POWER_SUPPLY
+            bash scripts/config --file out/.config --enable INPUT
+            bash scripts/config --file out/.config --enable INPUT_MISC
+            bash scripts/config --file out/.config --enable MHI_BUS
+            bash scripts/config --file out/.config --enable SM_GCC_KONA
+            bash scripts/config --file out/.config --enable QCOM_PDC
+            bash scripts/config --file out/.config --enable SCSI_UFS_QCOM
+            bash scripts/config --file out/.config --enable SCSI_UFSHCD_PLATFORM
+            bash scripts/config --file out/.config --disable USB_PD_POLICY
             make O=out olddefconfig
           else
             echo "=== 缓存命中，使用已有 .config ==="
