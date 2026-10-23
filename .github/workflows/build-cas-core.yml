@@ -150,7 +150,7 @@ jobs:
             echo "=== 首次配置 ==="
             make O=out gki_defconfig
             if [ -f arch/arm64/configs/vendor/kona_QGKI.config ]; then
-              scripts/kconfig/merge_config.sh -m -O out .config arch/arm64/configs/vendor/kona_QGKI.config
+              scripts/kconfig/merge_config.sh -m -O out out/.config arch/arm64/configs/vendor/kona_QGKI.config
             fi
             bash scripts/config --enable I2C --file out/.config
             bash scripts/config --enable POWER_SUPPLY --file out/.config
