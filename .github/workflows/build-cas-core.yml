@@ -108,7 +108,7 @@ jobs:
           printf 'obj-y += bq27z561_fg.o\n' > drivers/port_cas/cas_qcom/Makefile
           # trace.h: clang-14 无法解析 TRACE_INCLUDE_PATH，注释掉 define_trace.h 引用
           # Fix trace.h: add -I$(srctree)/drivers/clk/qcom so clang can find it
-          grep -q "ccflags-y.*drivers/clk/qcom" drivers/clk/qcom/Makefile || sed -i "1i ccflags-y += -I$(srctree)/drivers/clk/qcom" drivers/clk/qcom/Makefile
+          grep -q "ccflags-y.*drivers/clk/qcom" drivers/clk/qcom/Makefile || sed -i "1i ccflags-y += -I$(pwd)/drivers/clk/qcom" drivers/clk/qcom/Makefile
           # 禁用 gcc-wrapper.py forbidden warning 包装器
           sed -i '/^CC.*gcc-wrapper\.py/c\CC\t\t= $(REAL_CC)' Makefile
 
