@@ -159,6 +159,10 @@ jobs:
           bash scripts/config --enable INPUT
           bash scripts/config --enable INPUT_MISC
           bash scripts/config --enable MHI_BUS
+          bash scripts/config --enable SM_GCC_KONA
+          bash scripts/config --enable QCOM_PDC
+          bash scripts/config --enable SCSI_UFS_QCOM
+          bash scripts/config --enable SCSI_UFSHCD_PLATFORM
           
           # 禁用 USB PD policy_engine（与 power_supply.h 注入宏冲突，非启动必需）
           bash scripts/config --disable USB_PD_POLICY
@@ -170,6 +174,9 @@ jobs:
           echo "=== 验证关键 CONFIG ==="
           for cfg in \
               CONFIG_SCSI_UFSHCD_QTI \
+              CONFIG_SCSI_UFS_QCOM \
+              CONFIG_SM_GCC_KONA \
+              CONFIG_QCOM_PDC \
               CONFIG_ARM_SMMU \
               CONFIG_QCOM_RPMH \
               CONFIG_QCOM_CLK_RPMH \
