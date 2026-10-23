@@ -23,7 +23,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: kernel54
-          key: kernel-src-5.4-qgki-v2
+          key: kernel-src-5.4-qgki-v3
 
       - name: Clone 5.4 kernel
         if: steps.cache-src.outputs.cache-hit != 'true'
@@ -117,7 +117,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: kernel54/out
-          key: kernel-build-out-v1
+          key: kernel-build-out-v2
           restore-keys: |
             kernel-build-out-
 
@@ -230,4 +230,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: kernel54/out
-          key: kernel-build-out-v1
+          key: kernel-build-out-v2
