@@ -112,7 +112,8 @@ jobs:
           
           # clk-debug.c 的 trace.h 在 clang-14 下 TRACE_INCLUDE_PATH="." 不生效
           # clk-debug 是 debugfs 时钟测量功能，非启动必需，直接禁用
-          sed -i '/clk-qcom-y += clk-debug.o/s/^/# DISABLED: /' drivers/clk/qcom/Makefile
+          # 修复 trace.h TRACE_INCLUDE_PATH: clang-14 下 "." 不生效，改用绝对路径
+          sed -i "s/#define TRACE_INCLUDE_PATH .*/#define TRACE_INCLUDE_PATH drivers\/clk\/qcom/" drivers/clk/qcom/trace.h
           
           # 禁用 gcc-wrapper.py forbidden warning 包装器（clang-14 与 5.4 QC 驱动有大量兼容性 warning）
           sed -i '/^CC.*gcc-wrapper\.py/c\CC\t\t= $(REAL_CC)' Makefile
