@@ -125,7 +125,8 @@ obj-y += cas_qcom/
 ' > drivers/port_cas/cas_qcom/Makefile
           
           # trace.h: clang-14 cannot resolve TRACE_INCLUDE_PATH, comment out define_trace.h
-          sed -i "s|#include <trace/define_trace.h>|// #include <trace/define_trace.h>|" drivers/clk/qcom/trace.h
+          # 修复 trace.h: clang-14 需要显式 -I 路径才能找到 TRACE_INCLUDE_PATH/trace.h
+          grep -q "ccflags-y.*drivers/clk/qcom" drivers/clk/qcom/Makefile || sed -i "1i ccflags-y += -I$(srctree)/drivers/clk/qcom" drivers/clk/qcom/Makefile
           
           sed -i '/^CC.*gcc-wrapper\.py/c\CC\t\t= $(REAL_CC)' Makefile
       
