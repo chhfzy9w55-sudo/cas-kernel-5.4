@@ -1,4 +1,5 @@
 name: build-cas-core
+
 on:
   workflow_dispatch:
 permissions:
@@ -10,37 +11,35 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-      
-      - name: Cache kernel source
-        uses: actions/cache@v4
-        id: cache-source
-        with:
-          path: kernel54
-          key: kernel54-src-v1
-          restore-keys: |
-            kernel54-src-
-      
+
       - name: Install deps
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils curl ca-certificates clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu
-      
+
+      # ===== 缓存 1: 内核源码 =====
+      - name: Cache kernel source
+        id: cache-src
+        uses: actions/cache@v4
+        with:
+          path: kernel54
+          key: kernel-src-5.4-qgki-v2
+
       - name: Clone 5.4 kernel
-        if: steps.cache-source.outputs.cache-hit != 'true'
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
+          rm -rf kernel54
           git clone --depth=1 -b 5.4 https://github.com/rofikkerneldev/qgki_kona_5.4.git kernel54
-      
+
       - name: Fetch and Move 4.19 sources
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           cd kernel54
           mkdir -p port_cas_temp/cas_qcom
-          
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          
           curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h"
           curl -sL --max-time 60 -o port_cas_temp/cas_qcom/pmic-voter.c "$BASE/drivers/power/supply/qcom/pmic-voter.c"
-          
           for dir in "drivers/input/misc/aw8697_haptic:aw8697_haptic" "drivers/power/supply/cas_qcom:cas_qcom"; do
             SRC=$(echo $dir | cut -d: -f1)
             DEST="port_cas_temp/$(echo $dir | cut -d: -f2)"
@@ -52,20 +51,18 @@ jobs:
               fi
             done
           done
-          
           rm -rf drivers/port_cas
           mv port_cas_temp drivers/port_cas
-          
           test -s drivers/port_cas/cas_qcom/battery.c || exit 1
           test -s drivers/port_cas/cas_qcom/pmic-voter.c || exit 1
-      
+
       - name: Suture power_supply.h
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           cd kernel54
           cp include/linux/power_supply.h include/linux/power_supply.h.bak
           curl -sL --max-time 60 -o /tmp/ps_4_19.h "https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss/include/linux/power_supply.h"
-          
           python3 << 'PYEOF'
           import re
           from pathlib import Path
@@ -75,20 +72,15 @@ jobs:
           all_symbols = set(re.findall(r'\b(POWER_SUPPLY_[A-Z0-9_]+)\b', cas))
           missing = [s for s in all_symbols if s not in content]
           if missing:
-              insertion = "
-
-/* Injected from 4.19 */
-"
+              insertion = "\n\n/* Injected from 4.19 */\n"
               for i, m in enumerate(missing):
-                  insertion += f"#ifndef {m}
-#define {m} (0x8000 + {i})
-#endif
-"
+                  insertion += f"#ifndef {m}\n#define {m} (0x8000 + {i})\n#endif\n"
               last_endif = content.rfind('#endif')
               target_h.write_text(content[:last_endif] + insertion + content[last_endif:])
           PYEOF
-      
+
       - name: Patch API compatibility
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           cd kernel54
@@ -99,46 +91,36 @@ jobs:
               text = text.replace('wakeup_source_register("', 'wakeup_source_register(NULL, "')
               text = text.replace("asm/uaccess.h", "linux/uaccess.h")
               if "do_gettimeofday" in text and "ktime_get_real_ts64" not in text:
-                  preamble = "#include <linux/time64.h>
-#include <linux/ktime.h>
-#include <linux/timekeeping.h>
-"
-                  preamble += "#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)
-"
+                  preamble = "#include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n"
+                  preamble += "#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)\n"
                   text = preamble + text
               path.write_text(text)
           PYEOF
-      
+
       - name: Configure Makefiles
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           cd kernel54
           grep -q 'port_cas' drivers/Makefile || echo 'obj-y += port_cas/' >> drivers/Makefile
-          
-          printf 'obj-y += aw8697_haptic/
-obj-y += cas_qcom/
-' > drivers/port_cas/Makefile
-          printf 'obj-y += aw8697.o
-' > drivers/port_cas/aw8697_haptic/Makefile
-          
-          printf 'obj-y += bq27z561_fg.o
-' > drivers/port_cas/cas_qcom/Makefile
-          
-          # trace.h: clang-14 cannot resolve TRACE_INCLUDE_PATH, comment out define_trace.h
-          # 修复 trace.h: clang-14 需要显式 -I 路径才能找到 TRACE_INCLUDE_PATH/trace.h
+          printf 'obj-y += aw8697_haptic/\nobj-y += cas_qcom/\n' > drivers/port_cas/Makefile
+          printf 'obj-y += aw8697.o\n' > drivers/port_cas/aw8697_haptic/Makefile
+          printf 'obj-y += bq27z561_fg.o\n' > drivers/port_cas/cas_qcom/Makefile
+          # trace.h: clang-14 无法解析 TRACE_INCLUDE_PATH，注释掉 define_trace.h 引用
+          # Fix trace.h: add -I$(srctree)/drivers/clk/qcom so clang can find it
           grep -q "ccflags-y.*drivers/clk/qcom" drivers/clk/qcom/Makefile || sed -i "1i ccflags-y += -I$(srctree)/drivers/clk/qcom" drivers/clk/qcom/Makefile
-          
+          # 禁用 gcc-wrapper.py forbidden warning 包装器
           sed -i '/^CC.*gcc-wrapper\.py/c\CC\t\t= $(REAL_CC)' Makefile
-      
-      - name: Cache build output
+
+      # ===== 缓存 2: 编译输出 (增量编译) =====
+      - name: Restore build output cache
         uses: actions/cache/restore@v4
-        id: cache-out
         with:
           path: kernel54/out
-          key: kernel54-out-v1
+          key: kernel-build-out-v1
           restore-keys: |
-            kernel54-out-
-      
+            kernel-build-out-
+
       - name: Build kernel
         run: |
           set -o pipefail
@@ -162,45 +144,56 @@ obj-y += cas_qcom/
           sudo ln -sf $(which llvm-objdump-14) /usr/local/bin/llvm-objdump
           sudo ln -sf $(which llvm-strip-14) /usr/local/bin/llvm-strip
           sudo ln -sf $(which clang-14) /usr/local/bin/clang
-          # 1. Load GKI defconfig into out/
-          make O=out gki_defconfig
 
-          # 2. Merge kona QGKI config fragment
-          if [ -f arch/arm64/configs/vendor/kona_QGKI.config ]; then
-            scripts/kconfig/merge_config.sh -m -O out out/.config arch/arm64/configs/vendor/kona_QGKI.config
+          # 如果 out 目录没有 .config，执行完整配置流程
+          if [ ! -f out/.config ]; then
+            echo "=== 首次配置 ==="
+            make O=out gki_defconfig
+            if [ -f arch/arm64/configs/vendor/kona_QGKI.config ]; then
+              scripts/kconfig/merge_config.sh -m -O out .config arch/arm64/configs/vendor/kona_QGKI.config
+            fi
+            bash scripts/config --enable I2C --file out/.config
+            bash scripts/config --enable POWER_SUPPLY --file out/.config
+            bash scripts/config --enable INPUT --file out/.config
+            bash scripts/config --enable INPUT_MISC --file out/.config
+            bash scripts/config --enable MHI_BUS --file out/.config
+            bash scripts/config --enable SM_GCC_KONA --file out/.config
+            bash scripts/config --enable QCOM_PDC --file out/.config
+            bash scripts/config --enable SCSI_UFS_QCOM --file out/.config
+            bash scripts/config --enable SCSI_UFSHCD_PLATFORM --file out/.config
+            bash scripts/config --disable USB_PD_POLICY --file out/.config
+            make O=out olddefconfig
           else
-            echo "WARNING: kona_QGKI.config not found, using GKI only"
+            echo "=== 缓存命中，使用已有 .config ==="
           fi
-          
-          # 3. Additional peripherals + kona platform configs
-          bash scripts/config --file out/.config --enable I2C
-          bash scripts/config --file out/.config --enable POWER_SUPPLY
-          bash scripts/config --file out/.config --enable INPUT
-          bash scripts/config --file out/.config --enable INPUT_MISC
-          bash scripts/config --file out/.config --enable MHI_BUS
-          bash scripts/config --file out/.config --enable SM_GCC_KONA
-          bash scripts/config --file out/.config --enable QCOM_PDC
-          bash scripts/config --file out/.config --enable SCSI_UFS_QCOM
-          bash scripts/config --file out/.config --enable SCSI_UFSHCD_PLATFORM
-          
-          bash scripts/config --file out/.config --disable USB_PD_POLICY
-          
-          # 4. Resolve final config
-          make O=out olddefconfig
-          
-          # 5. Verify critical configs
-          echo "=== Verify CONFIGs ==="
-          for cfg in               CONFIG_SCSI_UFSHCD_QTI               CONFIG_SCSI_UFS_QCOM               CONFIG_SM_GCC_KONA               CONFIG_QCOM_PDC               CONFIG_ARM_SMMU               CONFIG_QCOM_RPMH               CONFIG_QCOM_CLK_RPMH               CONFIG_QCOM_SCM               CONFIG_QCOM_SMEM               CONFIG_PINCTRL_KONA               CONFIG_INTERCONNECT_QCOM_KONA               CONFIG_COMMON_CLK_QCOM               CONFIG_SCSI_UFSHCD               CONFIG_REGULATOR
+
+          # 验证关键 CONFIG
+          echo "=== 验证关键 CONFIG ==="
+          for cfg in \
+              CONFIG_SCSI_UFSHCD_QTI \
+              CONFIG_SCSI_UFS_QCOM \
+              CONFIG_SM_GCC_KONA \
+              CONFIG_QCOM_PDC \
+              CONFIG_ARM_SMMU \
+              CONFIG_QCOM_RPMH \
+              CONFIG_QCOM_CLK_RPMH \
+              CONFIG_QCOM_SCM \
+              CONFIG_QCOM_SMEM \
+              CONFIG_PINCTRL_KONA \
+              CONFIG_INTERCONNECT_QCOM_KONA \
+              CONFIG_COMMON_CLK_QCOM \
+              CONFIG_SCSI_UFSHCD \
+              CONFIG_REGULATOR
           do
             grep -E "^${cfg}=" out/.config || echo "WARN: ${cfg} not set!"
           done
-          
-          # 6. Build kernel and DTB (incremental via out/ cache)
-          make O=out -j2 KCFLAGS="-Wno-align-mismatch -Wno-error -Wno-void-pointer-to-int-cast -Wno-unused-const-variable -Wno-section -Wno-misleading-indentation" Image dtbs 2>&1 | tee build.log
-          
-          echo "=== DTB products ==="
+
+          # 增量编译：Kbuild 会根据时间戳自动跳过未修改的文件
+          make O=out -j$(nproc) KCFLAGS="-Wno-align-mismatch -Wno-error -Wno-void-pointer-to-int-cast -Wno-unused-const-variable -Wno-section -Wno-misleading-indentation" Image dtbs 2>&1 | tee build.log
+
+          echo "=== DTB 产物 ==="
           find out/arch/arm64/boot/dts -name '*.dtb' -exec ls -la {} \; 2>/dev/null || echo "No DTB found"
-      
+
       - name: Show errors
         if: always()
         run: |
@@ -208,14 +201,7 @@ obj-y += cas_qcom/
           if [ -f build.log ]; then
             grep -niE 'error:|fatal error:|undefined reference|undefined symbol|No rule|ld\.lld:|clang: error:' build.log | tail -50
           fi
-      
-      - name: Save build output cache
-        if: success()
-        uses: actions/cache/save@v4
-        with:
-          path: kernel54/out
-          key: kernel54-out-v1
-      
+
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
@@ -223,17 +209,25 @@ obj-y += cas_qcom/
           name: cas-kernel-build-log
           path: kernel54/build.log
           if-no-files-found: warn
-      
+
       - name: Upload Image
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Image_cas_core
           path: kernel54/out/arch/arm64/boot/Image
-      
+
       - name: Upload DTB
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: DTB_cas_core
           path: kernel54/out/arch/arm64/boot/dts/qcom/*.dtb
+
+      # ===== 保存编译输出缓存 (仅成功时) =====
+      - name: Save build output cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: kernel54/out
+          key: kernel-build-out-v1
