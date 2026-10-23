@@ -2,10 +2,8 @@ name: build-cas-core
 
 on:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -19,51 +17,52 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils curl ca-certificates clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu
 
+      # ===== 缓存 1: 内核源码 =====
+      - name: Cache kernel source
+        id: cache-src
+        uses: actions/cache@v4
+        with:
+          path: kernel54
+          key: kernel-src-5.4-qgki-v2
+
       - name: Clone 5.4 kernel
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
+          rm -rf kernel54
           git clone --depth=1 -b 5.4 https://github.com/rofikkerneldev/qgki_kona_5.4.git kernel54
 
       - name: Fetch and Move 4.19 sources
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           cd kernel54
           mkdir -p port_cas_temp/cas_qcom
-          
           BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
-          
-          # 1. 拉取 voter 框架的头文件和源码（拯救链接错误的命脉）
           curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h"
           curl -sL --max-time 60 -o port_cas_temp/cas_qcom/pmic-voter.c "$BASE/drivers/power/supply/qcom/pmic-voter.c"
-          
-          # 2. 拉取外设
           for dir in "drivers/input/misc/aw8697_haptic:aw8697_haptic" "drivers/power/supply/cas_qcom:cas_qcom"; do
             SRC=$(echo $dir | cut -d: -f1)
             DEST="port_cas_temp/$(echo $dir | cut -d: -f2)"
             mkdir -p "$DEST"
             API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$SRC?ref=cas-q-oss"
             curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
-              # 避免覆盖刚刚拉下来的 pmic-voter.c
               if [ "$f" != "pmic-voter.c" ] || [ "$DEST" != "port_cas_temp/cas_qcom" ]; then
                 curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
               fi
             done
           done
-          
-          # 强制移动到 drivers/ 下
           rm -rf drivers/port_cas
           mv port_cas_temp drivers/port_cas
-          
-          # 验证核心文件是否真实存在
           test -s drivers/port_cas/cas_qcom/battery.c || exit 1
           test -s drivers/port_cas/cas_qcom/pmic-voter.c || exit 1
 
       - name: Suture power_supply.h
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           cd kernel54
           cp include/linux/power_supply.h include/linux/power_supply.h.bak
           curl -sL --max-time 60 -o /tmp/ps_4_19.h "https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss/include/linux/power_supply.h"
-          
           python3 << 'PYEOF'
           import re
           from pathlib import Path
@@ -81,6 +80,7 @@ jobs:
           PYEOF
 
       - name: Patch API compatibility
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           cd kernel54
@@ -98,26 +98,27 @@ jobs:
           PYEOF
 
       - name: Configure Makefiles
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           cd kernel54
           grep -q 'port_cas' drivers/Makefile || echo 'obj-y += port_cas/' >> drivers/Makefile
-          
           printf 'obj-y += aw8697_haptic/\nobj-y += cas_qcom/\n' > drivers/port_cas/Makefile
           printf 'obj-y += aw8697.o\n' > drivers/port_cas/aw8697_haptic/Makefile
-          
-          # 关键：把外设源码加入编译列表
-          # 注意：pmic-voter.c 和 battery.c 已存在于 drivers/power/supply/qcom/ 原树中，不要重复编译
           printf 'obj-y += bq27z561_fg.o\n' > drivers/port_cas/cas_qcom/Makefile
-          
-          # clk-debug.c 的 trace.h 在 clang-14 下 TRACE_INCLUDE_PATH="." 不生效
-          # clk-debug 是 debugfs 时钟测量功能，非启动必需，直接禁用
-          # 修复 trace.h TRACE_INCLUDE_PATH: clang-14 下 "." 不生效，改用绝对路径
-          # trace.h: clang-14 无法解析 TRACE_INCLUDE_PATH，直接注释掉 define_trace.h 引用
+          # trace.h: clang-14 无法解析 TRACE_INCLUDE_PATH，注释掉 define_trace.h 引用
           sed -i "s|#include <trace/define_trace.h>|// #include <trace/define_trace.h>|" drivers/clk/qcom/trace.h
-          
-          # 禁用 gcc-wrapper.py forbidden warning 包装器（clang-14 与 5.4 QC 驱动有大量兼容性 warning）
+          # 禁用 gcc-wrapper.py forbidden warning 包装器
           sed -i '/^CC.*gcc-wrapper\.py/c\CC\t\t= $(REAL_CC)' Makefile
+
+      # ===== 缓存 2: 编译输出 (增量编译) =====
+      - name: Restore build output cache
+        uses: actions/cache/restore@v4
+        with:
+          path: kernel54/out
+          key: kernel-build-out-v1
+          restore-keys: |
+            kernel-build-out-
 
       - name: Build kernel
         run: |
@@ -135,8 +136,6 @@ jobs:
           export STRIP=llvm-strip-14
           export HOSTCC=clang-14
           export HOSTLD=ld.lld-14
-
-          # Kconfig.include 硬编码检测 ld.lld，需要 symlink
           sudo ln -sf $(which ld.lld-14) /usr/local/bin/ld.lld
           sudo ln -sf $(which llvm-ar-14) /usr/local/bin/llvm-ar
           sudo ln -sf $(which llvm-nm-14) /usr/local/bin/llvm-nm
@@ -145,34 +144,29 @@ jobs:
           sudo ln -sf $(which llvm-strip-14) /usr/local/bin/llvm-strip
           sudo ln -sf $(which clang-14) /usr/local/bin/clang
 
-          # 1. 加载 GKI 基础 defconfig
-          make gki_defconfig
-
-          # 2. 合并 kona QGKI 平台配置片段
-          if [ -f arch/arm64/configs/vendor/kona_QGKI.config ]; then
-            scripts/kconfig/merge_config.sh -m -O "$PWD" .config arch/arm64/configs/vendor/kona_QGKI.config
+          # 如果 out 目录没有 .config，执行完整配置流程
+          if [ ! -f out/.config ]; then
+            echo "=== 首次配置 ==="
+            make O=out gki_defconfig
+            if [ -f arch/arm64/configs/vendor/kona_QGKI.config ]; then
+              scripts/kconfig/merge_config.sh -m -O out .config arch/arm64/configs/vendor/kona_QGKI.config
+            fi
+            bash scripts/config --enable I2C --file out/.config
+            bash scripts/config --enable POWER_SUPPLY --file out/.config
+            bash scripts/config --enable INPUT --file out/.config
+            bash scripts/config --enable INPUT_MISC --file out/.config
+            bash scripts/config --enable MHI_BUS --file out/.config
+            bash scripts/config --enable SM_GCC_KONA --file out/.config
+            bash scripts/config --enable QCOM_PDC --file out/.config
+            bash scripts/config --enable SCSI_UFS_QCOM --file out/.config
+            bash scripts/config --enable SCSI_UFSHCD_PLATFORM --file out/.config
+            bash scripts/config --disable USB_PD_POLICY --file out/.config
+            make O=out olddefconfig
           else
-            echo "WARNING: kona_QGKI.config not found, using GKI only"
+            echo "=== 缓存命中，使用已有 .config ==="
           fi
 
-          # 3. 追加外设配置
-          bash scripts/config --enable I2C
-          bash scripts/config --enable POWER_SUPPLY
-          bash scripts/config --enable INPUT
-          bash scripts/config --enable INPUT_MISC
-          bash scripts/config --enable MHI_BUS
-          bash scripts/config --enable SM_GCC_KONA
-          bash scripts/config --enable QCOM_PDC
-          bash scripts/config --enable SCSI_UFS_QCOM
-          bash scripts/config --enable SCSI_UFSHCD_PLATFORM
-          
-          # 禁用 USB PD policy_engine（与 power_supply.h 注入宏冲突，非启动必需）
-          bash scripts/config --disable USB_PD_POLICY
-
-          # 4. 最终配置解析
-          make olddefconfig
-
-          # 5. 验证关键平台配置是否生效
+          # 验证关键 CONFIG
           echo "=== 验证关键 CONFIG ==="
           for cfg in \
               CONFIG_SCSI_UFSHCD_QTI \
@@ -190,15 +184,14 @@ jobs:
               CONFIG_SCSI_UFSHCD \
               CONFIG_REGULATOR
           do
-            grep -E "^${cfg}=" .config || echo "WARN: ${cfg} not set!"
+            grep -E "^${cfg}=" out/.config || echo "WARN: ${cfg} not set!"
           done
 
-          # 6. 编译内核和 DTB（抑制 clang-14 对 5.4 的各类 forbidden warning 误报）
-          make -j2 KCFLAGS="-Wno-align-mismatch -Wno-error -Wno-void-pointer-to-int-cast -Wno-unused-const-variable -Wno-section -Wno-misleading-indentation" Image dtbs 2>&1 | tee build.log
+          # 增量编译：Kbuild 会根据时间戳自动跳过未修改的文件
+          make O=out -j$(nproc) KCFLAGS="-Wno-align-mismatch -Wno-error -Wno-void-pointer-to-int-cast -Wno-unused-const-variable -Wno-section -Wno-misleading-indentation" Image dtbs 2>&1 | tee build.log
 
-          # 验证 DTB 产物
           echo "=== DTB 产物 ==="
-          find arch/arm64/boot/dts -name '*.dtb' -exec ls -la {} \; 2>/dev/null || echo "No DTB found"
+          find out/arch/arm64/boot/dts -name '*.dtb' -exec ls -la {} \; 2>/dev/null || echo "No DTB found"
 
       - name: Show errors
         if: always()
@@ -221,11 +214,19 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Image_cas_core
-          path: kernel54/arch/arm64/boot/Image
+          path: kernel54/out/arch/arm64/boot/Image
 
       - name: Upload DTB
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: DTB_cas_core
-          path: kernel54/arch/arm64/boot/dts/qcom/*.dtb
+          path: kernel54/out/arch/arm64/boot/dts/qcom/*.dtb
+
+      # ===== 保存编译输出缓存 (仅成功时) =====
+      - name: Save build output cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: kernel54/out
+          key: kernel-build-out-v1
