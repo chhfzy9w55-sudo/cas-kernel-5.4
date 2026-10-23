@@ -125,6 +125,8 @@ obj-y += cas_qcom/
 ' > drivers/port_cas/cas_qcom/Makefile
           
           # trace.h: clang-14 cannot resolve TRACE_INCLUDE_PATH, comment out define_trace.h
+          # Re-enable clk-debug.o (was previously disabled, now works with trace.h fix)
+          sed -i "s|^# DISABLED: clk-qcom-y += clk-debug.o|clk-qcom-y += clk-debug.o|" drivers/clk/qcom/Makefile
           # 修复 trace.h: clang-14 需要显式 -I 路径才能找到 TRACE_INCLUDE_PATH/trace.h
           grep -q "ccflags-y.*drivers/clk/qcom" drivers/clk/qcom/Makefile || sed -i "1i ccflags-y += -I$(srctree)/drivers/clk/qcom" drivers/clk/qcom/Makefile
           
