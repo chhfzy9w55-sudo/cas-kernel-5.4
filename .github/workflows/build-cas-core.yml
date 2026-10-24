@@ -162,10 +162,11 @@ jobs:
           fi
           # ====== 强制启用 earlycon/console 配置 (每次都执行, 幂等) ======
           echo "=== 启用 SERIAL_MSM_GENI_CONSOLE (earlycon + console) ==="
-          bash scripts/config --file out/.config --enable SERIAL_MSM_GENI
-          bash scripts/config --file out/.config --enable SERIAL_MSM_GENI_CONSOLE
-          bash scripts/config --file out/.config --enable SERIAL_CORE_CONSOLE
-          bash scripts/config --file out/.config --enable SERIAL_EARLYCON
+          # v5: 禁用串口驱动排除死锁 (控制变量法)
+          bash scripts/config --file out/.config --disable SERIAL_MSM_GENI
+          bash scripts/config --file out/.config --disable SERIAL_MSM_GENI_CONSOLE
+          bash scripts/config --file out/.config --disable SERIAL_CORE_CONSOLE
+          bash scripts/config --file out/.config --disable SERIAL_EARLYCON
           # 强制重算依赖
           make O=out ARCH=arm64 olddefconfig
           # 验证关键 CONFIG
