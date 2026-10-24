@@ -114,7 +114,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: kernel54/out
-          key: kernel-build-out-v3
+          key: kernel-build-out-v4
           restore-keys: |
             kernel-build-out-
       - name: Build kernel
@@ -162,11 +162,15 @@ jobs:
           fi
           # ====== 强制启用 earlycon/console 配置 (每次都执行, 幂等) ======
           echo "=== 启用 SERIAL_MSM_GENI_CONSOLE (earlycon + console) ==="
-          # v5: 禁用串口驱动排除死锁 (控制变量法)
-          bash scripts/config --file out/.config --disable SERIAL_MSM_GENI
-          bash scripts/config --file out/.config --disable SERIAL_MSM_GENI_CONSOLE
-          bash scripts/config --file out/.config --disable SERIAL_CORE_CONSOLE
-          bash scripts/config --file out/.config --disable SERIAL_EARLYCON
+          # v6: 恢复串口驱动 + 禁用 EFI stub (XBL 不认 MZ 头)
+          bash scripts/config --file out/.config --enable SERIAL_MSM_GENI
+          bash scripts/config --file out/.config --enable SERIAL_MSM_GENI_CONSOLE
+          bash scripts/config --file out/.config --enable SERIAL_CORE_CONSOLE
+          bash scripts/config --file out/.config --enable SERIAL_EARLYCON
+          # 强制关闭 EFI stub - XBL 只认纯 ARM64 Image
+          bash scripts/config --file out/.config --disable EFI
+          bash scripts/config --file out/.config --disable EFI_STUB
+          bash scripts/config --file out/.config --disable EFI_ARM_STUB
           # 强制重算依赖
           make O=out ARCH=arm64 olddefconfig
           # 验证关键 CONFIG
@@ -190,6 +194,7 @@ jobs:
               CONFIG_SERIAL_MSM_GENI_CONSOLE \
               CONFIG_SERIAL_CORE_CONSOLE \
               CONFIG_SERIAL_EARLYCON
+              CONFIG_EFI
           do
             grep -E "^${cfg}=" out/.config || echo "WARN: ${cfg} not set!"
           done
@@ -198,6 +203,8 @@ jobs:
           echo "=== DTB 产物 ==="
           find out/arch/arm64/boot/dts -name '*.dtb' -exec ls -la {} \; 2>/dev/null || echo "No DTB found"
           # ====== 新增: 验证 earlycon/console 编译产物 ======
+          echo "=== 检查 Image 头部 (必须不是 MZ) ==="
+          xxd -l 16 out/arch/arm64/boot/Image
           echo "=== 检查 .o 文件是否生成 ==="
           find out/drivers/tty/serial -name 'msm_geni_serial*.o' -print
           echo "=== 检查 Image 中是否有 earlycon 字符串 ==="
@@ -236,4 +243,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: kernel54/out
-          key: kernel-build-out-v3
+          key: kernel-build-out-v4
