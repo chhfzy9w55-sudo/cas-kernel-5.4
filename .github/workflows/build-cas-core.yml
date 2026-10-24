@@ -1,5 +1,4 @@
 name: build-cas-core
-
 on:
   workflow_dispatch:
 permissions:
@@ -11,12 +10,10 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
       - name: Install deps
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils curl ca-certificates clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu
-
       # ===== 缓存 1: 内核源码 =====
       - name: Cache kernel source
         id: cache-src
@@ -24,13 +21,11 @@ jobs:
         with:
           path: kernel54
           key: kernel-src-5.4-qgki-v3
-
       - name: Clone 5.4 kernel
         if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
           rm -rf kernel54
           git clone --depth=1 -b 5.4 https://github.com/rofikkerneldev/qgki_kona_5.4.git kernel54
-
       - name: Fetch and Move 4.19 sources
         if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
@@ -55,7 +50,6 @@ jobs:
           mv port_cas_temp drivers/port_cas
           test -s drivers/port_cas/cas_qcom/battery.c || exit 1
           test -s drivers/port_cas/cas_qcom/pmic-voter.c || exit 1
-
       - name: Suture power_supply.h
         if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
@@ -96,7 +90,6 @@ jobs:
                   text = preamble + text
               path.write_text(text)
           PYEOF
-
       - name: Configure Makefiles
         if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
@@ -107,20 +100,23 @@ jobs:
           printf 'obj-y += aw8697.o\n' > drivers/port_cas/aw8697_haptic/Makefile
           printf 'obj-y += bq27z561_fg.o\n' > drivers/port_cas/cas_qcom/Makefile
           # trace.h: clang-14 无法解析 TRACE_INCLUDE_PATH，注释掉 define_trace.h 引用
-          # Fix trace.h: add -I$(srctree)/drivers/clk/qcom so clang can find it
           grep -q "ccflags-y.*drivers/clk/qcom" drivers/clk/qcom/Makefile || sed -i "1i ccflags-y += -I$(pwd)/drivers/clk/qcom" drivers/clk/qcom/Makefile
           # 禁用 gcc-wrapper.py forbidden warning 包装器
           sed -i '/^CC.*gcc-wrapper\.py/c\CC\t\t= $(REAL_CC)' Makefile
-
+      # ===== 新增: 检查 serial Kconfig 真实配置符号 =====
+      - name: Check serial Kconfig symbols
+        run: |
+          cd kernel54
+          echo "=== 检查 Kconfig 和 Makefile 的配置符号 ==="
+          grep -nE 'SERIAL_MSM_GENI(_CONSOLE|_EARLY_CONSOLE)?' drivers/tty/serial/Kconfig drivers/tty/serial/Makefile || true
       # ===== 缓存 2: 编译输出 (增量编译) =====
       - name: Restore build output cache
         uses: actions/cache/restore@v4
         with:
           path: kernel54/out
-          key: kernel-build-out-v2
+          key: kernel-build-out-v3
           restore-keys: |
             kernel-build-out-
-
       - name: Build kernel
         run: |
           set -o pipefail
@@ -144,7 +140,6 @@ jobs:
           sudo ln -sf $(which llvm-objdump-14) /usr/local/bin/llvm-objdump
           sudo ln -sf $(which llvm-strip-14) /usr/local/bin/llvm-strip
           sudo ln -sf $(which clang-14) /usr/local/bin/clang
-
           # 如果 out 目录没有 .config，执行完整配置流程
           if [ ! -f out/.config ]; then
             echo "=== 首次配置 ==="
@@ -162,11 +157,17 @@ jobs:
             bash scripts/config --file out/.config --enable SCSI_UFS_QCOM
             bash scripts/config --file out/.config --enable SCSI_UFSHCD_PLATFORM
             bash scripts/config --file out/.config --disable USB_PD_POLICY
-            make O=out olddefconfig
           else
             echo "=== 缓存命中，使用已有 .config ==="
           fi
-
+          # ====== 强制启用 earlycon/console 配置 (每次都执行, 幂等) ======
+          echo "=== 启用 SERIAL_MSM_GENI_CONSOLE (earlycon + console) ==="
+          bash scripts/config --file out/.config --enable SERIAL_MSM_GENI
+          bash scripts/config --file out/.config --enable SERIAL_MSM_GENI_CONSOLE
+          bash scripts/config --file out/.config --enable SERIAL_CORE_CONSOLE
+          bash scripts/config --file out/.config --enable SERIAL_EARLYCON
+          # 强制重算依赖
+          make O=out ARCH=arm64 olddefconfig
           # 验证关键 CONFIG
           echo "=== 验证关键 CONFIG ==="
           for cfg in \
@@ -183,17 +184,25 @@ jobs:
               CONFIG_INTERCONNECT_QCOM_KONA \
               CONFIG_COMMON_CLK_QCOM \
               CONFIG_SCSI_UFSHCD \
-              CONFIG_REGULATOR
+              CONFIG_REGULATOR \
+              CONFIG_SERIAL_MSM_GENI \
+              CONFIG_SERIAL_MSM_GENI_CONSOLE \
+              CONFIG_SERIAL_CORE_CONSOLE \
+              CONFIG_SERIAL_EARLYCON
           do
             grep -E "^${cfg}=" out/.config || echo "WARN: ${cfg} not set!"
           done
-
-          # 增量编译：Kbuild 会根据时间戳自动跳过未修改的文件
+          # 增量编译
           make O=out -j$(nproc) KCFLAGS="-Wno-align-mismatch -Wno-error -Wno-void-pointer-to-int-cast -Wno-unused-const-variable -Wno-section -Wno-misleading-indentation" Image dtbs 2>&1 | tee build.log
-
           echo "=== DTB 产物 ==="
           find out/arch/arm64/boot/dts -name '*.dtb' -exec ls -la {} \; 2>/dev/null || echo "No DTB found"
-
+          # ====== 新增: 验证 earlycon/console 编译产物 ======
+          echo "=== 检查 .o 文件是否生成 ==="
+          find out/drivers/tty/serial -name 'msm_geni_serial*.o' -print
+          echo "=== 检查 Image 中是否有 earlycon 字符串 ==="
+          strings out/arch/arm64/boot/Image | grep -i 'msm_geni' || echo "WARN: msm_geni not found in Image!"
+          echo "=== 检查 Image 中是否有 earlycon 注册函数 ==="
+          strings out/arch/arm64/boot/Image | grep -i 'geni_serial_earlycon' || echo "WARN: geni_serial_earlycon not found!"
       - name: Show errors
         if: always()
         run: |
@@ -201,7 +210,6 @@ jobs:
           if [ -f build.log ]; then
             grep -niE 'error:|fatal error:|undefined reference|undefined symbol|No rule|ld\.lld:|clang: error:' build.log | tail -50
           fi
-
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
@@ -209,25 +217,22 @@ jobs:
           name: cas-kernel-build-log
           path: kernel54/build.log
           if-no-files-found: warn
-
       - name: Upload Image
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Image_cas_core
           path: kernel54/out/arch/arm64/boot/Image
-
       - name: Upload DTB
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: DTB_cas_core
           path: kernel54/out/arch/arm64/boot/dts/qcom/*.dtb
-
       # ===== 保存编译输出缓存 (仅成功时) =====
       - name: Save build output cache
         if: success()
         uses: actions/cache/save@v4
         with:
           path: kernel54/out
-          key: kernel-build-out-v2
+          key: kernel-build-out-v3
