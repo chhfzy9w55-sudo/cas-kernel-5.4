@@ -193,7 +193,7 @@ jobs:
               CONFIG_SERIAL_MSM_GENI \
               CONFIG_SERIAL_MSM_GENI_CONSOLE \
               CONFIG_SERIAL_CORE_CONSOLE \
-              CONFIG_SERIAL_EARLYCON
+              CONFIG_SERIAL_EARLYCON \
               CONFIG_EFI
           do
             grep -E "^${cfg}=" out/.config || echo "WARN: ${cfg} not set!"
