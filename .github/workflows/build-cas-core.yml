@@ -114,7 +114,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: kernel54/out
-          key: kernel-build-out-v4
+          key: kernel-build-out-v5
           restore-keys: |
             kernel-build-out-
       - name: Build kernel
@@ -171,6 +171,8 @@ jobs:
           bash scripts/config --file out/.config --disable EFI
           bash scripts/config --file out/.config --disable EFI_STUB
           bash scripts/config --file out/.config --disable EFI_ARM_STUB
+          # v8: 禁用 DRM_MSM 显示驱动 (排除 DPU/MDSS 早期静默崩溃)
+          bash scripts/config --file out/.config --disable DRM_MSM
           # 强制重算依赖
           make O=out ARCH=arm64 olddefconfig
           # 验证关键 CONFIG
@@ -194,7 +196,8 @@ jobs:
               CONFIG_SERIAL_MSM_GENI_CONSOLE \
               CONFIG_SERIAL_CORE_CONSOLE \
               CONFIG_SERIAL_EARLYCON \
-              CONFIG_EFI
+              CONFIG_EFI\
+              CONFIG_DRM_MSM
           do
             grep -E "^${cfg}=" out/.config || echo "WARN: ${cfg} not set!"
           done
@@ -243,4 +246,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: kernel54/out
-          key: kernel-build-out-v4
+          key: kernel-build-out-v5
