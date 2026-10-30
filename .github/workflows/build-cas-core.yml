@@ -103,9 +103,9 @@ jobs:
           grep -q "ccflags-y.*drivers/clk/qcom" drivers/clk/qcom/Makefile || sed -i "1i ccflags-y += -I$(pwd)/drivers/clk/qcom" drivers/clk/qcom/Makefile
           # 禁用 gcc-wrapper.py forbidden warning 包装器
           sed -i '/^CC.*gcc-wrapper\.py/c\CC\t\t= $(REAL_CC)' Makefile
-          # WFE 探针: 在 head.S 的 ENTRY(stext) 开头插入死循环
-          python3 -c "f='arch/arm64/kernel/head.S';s=open(f).read();s=s.replace('ENTRY(stext)\n\tbl\tpreserve_boot_args','ENTRY(stext)\n\twfe\n\tb\t.\n\tbl\tpreserve_boot_args',1);open(f,'w').write(s)"
-          echo "=== WFE patch applied ==="
+          # WFE 探针: 用独立脚本修改 head.S 的 ENTRY(stext)
+          python3 scripts/wfe_patch.py arch/arm64/kernel/head.S
+          echo "=== WFE patch verification ==="
           grep -A4 "ENTRY(stext)" arch/arm64/kernel/head.S
       # ===== 新增: 检查 serial Kconfig 真实配置符号 =====
       - name: Check serial Kconfig symbols
@@ -118,7 +118,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: kernel54/out
-          key: kernel-build-out-v6
+          key: kernel-build-out-v7
           restore-keys: |
             kernel-build-out-
       - name: Build kernel
@@ -250,4 +250,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: kernel54/out
-          key: kernel-build-out-v6
+          key: kernel-build-out-v7
