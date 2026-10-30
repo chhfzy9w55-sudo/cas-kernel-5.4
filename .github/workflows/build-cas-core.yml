@@ -107,6 +107,9 @@ jobs:
           python3 scripts/wfe_patch.py arch/arm64/kernel/head.S
           echo "=== WFE patch verification ==="
           grep -A4 "ENTRY(stext)" arch/arm64/kernel/head.S
+          # 强制重编译 head.S (缓存恢复的 .o 时间戳比 patch 后的源文件新)
+          rm -f out/arch/arm64/kernel/head.o out/arch/arm64/kernel/head.s out/arch/arm64/boot/Image
+          touch arch/arm64/kernel/head.S
       # ===== 新增: 检查 serial Kconfig 真实配置符号 =====
       - name: Check serial Kconfig symbols
         run: |
