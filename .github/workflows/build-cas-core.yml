@@ -122,7 +122,7 @@ jobs:
           set -o pipefail
           cd kernel54
           # ===== WFE 探针: 修改 head.S 并强制重编译 =====
-          python3 -c "f='arch/arm64/kernel/head.S';s=open(f).read();s=s.replace('ENTRY(stext)\n\tbl\tpreserve_boot_args','ENTRY(stext)\n\twfe\n\tb\t.\n\tbl\tpreserve_boot_args',1);open(f,'w').write(s);print('WFE patch applied')"
+          python3 -c "f='arch/arm64/kernel/head.S';s=open(f).read();s=s.replace('ENTRY(stext)\n\tbl\tpreserve_boot_args\n1:\twfe\n\tb\t1b','ENTRY(stext)\n\tbl\tpreserve_boot_args',1);s=s.replace('ENTRY(stext)\n\twfe\n\tb\t.\n\tbl\tpreserve_boot_args','ENTRY(stext)\n\tbl\tpreserve_boot_args',1);s=s.replace('ENTRY(stext)\n\tbl\tpreserve_boot_args','ENTRY(stext)\n\tbl\tpreserve_boot_args\n1:\twfe\n\tb\t1b',1);open(f,'w').write(s);print('WFE patch applied')"
           echo "=== WFE patch verification ==="
           grep -A4 "ENTRY(stext)" arch/arm64/kernel/head.S
           # 强制重编译 head.S
