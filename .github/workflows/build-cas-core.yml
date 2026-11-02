@@ -121,18 +121,18 @@ jobs:
         run: |
           set -euo pipefail
           cd kernel54
-          python3 -c "
+          python3 << 'PYEOF'
           import re
           from pathlib import Path
           p = Path("arch/arm64/kernel/head.S")
           text = p.read_text()
-          pattern = r"ENTRY\(el2_setup\).*?ENDPROC\(el2_setup\)"
-          repl = "ENTRY(el2_setup)\n\tmrs\tx0, CurrentEL\n\n\tcmp\tx0, #0x8\n\tb.eq\t1f\n\n\tcmp\tx0, #0x4\n\tb.eq\t2f\n\n3:\n\tb\t3b\n\n1:\n\tb\t1b\n\n2:\n\twfe\n\tb\t2b\nENDPROC(el2_setup)"
+          pattern = r'ENTRY\(el2_setup\).*?ENDPROC\(el2_setup\)'
+          repl = 'ENTRY(el2_setup)\n\tmrs\tx0, CurrentEL\n\n\tcmp\tx0, #0x8\n\tb.eq\t1f\n\n\tcmp\tx0, #0x4\n\tb.eq\t2f\n\n3:\n\tb\t3b\n\n1:\n\tb\t1b\n\n2:\n\twfe\n\tb\t2b\nENDPROC(el2_setup)'
           new_text, count = re.subn(pattern, repl, text, flags=re.DOTALL)
           assert count == 1, f"replacement count={count}"
           p.write_text(new_text)
           print("head.S patched OK")
-          "
+          PYEOF
           grep -A15 "ENTRY(el2_setup)" arch/arm64/kernel/head.S | head -20
 
       - name: Build kernel
