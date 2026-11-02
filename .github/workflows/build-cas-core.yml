@@ -117,6 +117,54 @@ jobs:
           key: kernel-build-out-v7
           restore-keys: |
             kernel-build-out-
+      - name: Patch head.S: CurrentEL time probe
+        run: |
+          set -euo pipefail
+          cd kernel54
+          python3 << 'PYEOF'
+          from pathlib import Path
+          p = Path("arch/arm64/kernel/head.S")
+          text = p.read_text()
+
+          # Find el2_setup function body and replace entirely
+          import re
+          # Match from ENTRY(el2_setup) to ENDPROC(el2_setup)
+          pattern = r'ENTRY\(el2_setup\).*?ENDPROC\(el2_setup\)'
+          replacement = """ENTRY(el2_setup)
+\tmrs\tx0, CurrentEL
+
+\tcmp\tx0, #0x8
+\tb.eq\t1f
+
+\tcmp\tx0, #0x4
+\tb.eq\t2f
+
+3:
+\tb\t3b
+
+1:
+\tb\t1b
+
+2:
+\twfe
+\tb\t2b
+ENDPROC(el2_setup)"""
+
+          new_text, count = re.subn(pattern, replacement, text, flags=re.DOTALL)
+          if count != 1:
+              print(f"ERROR: el2_setup replacement count={count}, expected 1")
+              exit(1)
+
+          # Verify no leftover probe patches
+          leftover_markers = ['1:\twfe\n\tb\t1b', 'install_el2_stub:\n1:', 'bl\tel2_setup\n1:']
+          for m in leftover_markers:
+              if m in new_text:
+                  print(f"WARNING: leftover marker found: {m!r}")
+
+          p.write_text(new_text)
+          print("head.S patched: el2_setup replaced with CurrentEL time probe")
+          PYEOF
+
       - name: Build kernel
         run: |
           set -o pipefail
