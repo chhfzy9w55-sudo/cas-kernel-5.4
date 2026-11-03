@@ -117,23 +117,26 @@ jobs:
           key: kernel-build-out-v7
           restore-keys: |
             kernel-build-out-
-      - name: "Patch head.S CurrentEL time probe"
+      - name: "Patch head.S probe 0 busy after el2_setup"
         run: |
           set -euo pipefail
           cd kernel54
           python3 << 'PYEOF'
-          import re
           from pathlib import Path
           p = Path("arch/arm64/kernel/head.S")
           text = p.read_text()
-          pattern = r'ENTRY\(el2_setup\).*?ENDPROC\(el2_setup\)'
-          repl = 'ENTRY(el2_setup)\n\tmrs\tx0, CurrentEL\n\n\tcmp\tx0, #0x8\n\tb.eq\t1f\n\n\tcmp\tx0, #0x4\n\tb.eq\t2f\n\n3:\n\tb\t3b\n\n1:\n\tb\t1b\n\n2:\n\twfe\n\tb\t2b\nENDPROC(el2_setup)'
-          new_text, count = re.subn(pattern, repl, text, flags=re.DOTALL)
-          assert count == 1, f"replacement count={count}"
-          p.write_text(new_text)
-          print("head.S patched OK")
+          # Insert busy loop after "bl\tel2_setup\t\t\t// Drop to EL1, w0=cpu_boot_mode"
+          # in stext ENTRY (not in secondary_entry or sleep.S)
+          old = 'bl\tel2_setup\t\t\t// Drop to EL1, w0=cpu_boot_mode\n\tadrp\tx23, __PHYS_OFFSET'
+          new = 'bl\tel2_setup\t\t\t// Drop to EL1, w0=cpu_boot_mode\n1:\n\tb\t1b\n\tadrp\tx23, __PHYS_OFFSET'
+          if old not in text:
+              print("ERROR: cannot find stext bl el2_setup marker")
+              exit(1)
+          text = text.replace(old, new, 1)
+          p.write_text(text)
+          print("head.S patched: busy loop inserted after bl el2_setup in stext")
           PYEOF
-          grep -A15 "ENTRY(el2_setup)" arch/arm64/kernel/head.S | head -20
+          grep -A6 "ENTRY(stext)" arch/arm64/kernel/head.S | head -10
 
       - name: Build kernel
         run: |
