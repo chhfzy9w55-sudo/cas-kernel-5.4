@@ -117,7 +117,7 @@ jobs:
           key: kernel-build-out-v7
           restore-keys: |
             kernel-build-out-
-      - name: "Patch head.S probe 0 busy after el2_setup"
+      - name: "Patch head.S probe 1 busy after set_cpu_boot_mode_flag"
         run: |
           set -euo pipefail
           cd kernel54
@@ -125,18 +125,23 @@ jobs:
           from pathlib import Path
           p = Path("arch/arm64/kernel/head.S")
           text = p.read_text()
-          # Insert busy loop after "bl\tel2_setup\t\t\t// Drop to EL1, w0=cpu_boot_mode"
-          # in stext ENTRY (not in secondary_entry or sleep.S)
-          old = 'bl\tel2_setup\t\t\t// Drop to EL1, w0=cpu_boot_mode\n\tadrp\tx23, __PHYS_OFFSET'
-          new = 'bl\tel2_setup\t\t\t// Drop to EL1, w0=cpu_boot_mode\n1:\n\tb\t1b\n\tadrp\tx23, __PHYS_OFFSET'
-          if old not in text:
-              print("ERROR: cannot find stext bl el2_setup marker")
+          # Strip probe 0: remove busy loop after bl el2_setup in stext
+          old0 = 'bl\tel2_setup\t\t\t// Drop to EL1, w0=cpu_boot_mode\n1:\n\tb\t1b\n\tadrp\tx23, __PHYS_OFFSET'
+          new0 = 'bl\tel2_setup\t\t\t// Drop to EL1, w0=cpu_boot_mode\n\tadrp\tx23, __PHYS_OFFSET'
+          if old0 in text:
+              text = text.replace(old0, new0, 1)
+              print("stripped probe 0")
+          # Insert probe 1: busy loop after bl set_cpu_boot_mode_flag
+          old1 = 'bl\tset_cpu_boot_mode_flag\n\tbl\t__create_page_tables'
+          new1 = 'bl\tset_cpu_boot_mode_flag\n1:\n\tb\t1b\n\tbl\t__create_page_tables'
+          if old1 not in text:
+              print("ERROR: cannot find set_cpu_boot_mode_flag marker")
               exit(1)
-          text = text.replace(old, new, 1)
+          text = text.replace(old1, new1, 1)
           p.write_text(text)
-          print("head.S patched: busy loop inserted after bl el2_setup in stext")
+          print("head.S patched: busy loop inserted after bl set_cpu_boot_mode_flag")
           PYEOF
-          grep -A6 "ENTRY(stext)" arch/arm64/kernel/head.S | head -10
+          grep -A10 "ENTRY(stext)" arch/arm64/kernel/head.S | head -14
 
       - name: Build kernel
         run: |
