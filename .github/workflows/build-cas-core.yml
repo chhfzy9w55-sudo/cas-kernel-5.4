@@ -117,7 +117,7 @@ jobs:
           key: kernel-build-out-v7
           restore-keys: |
             kernel-build-out-
-      - name: "Patch head.S probe 2 busy after __create_page_tables"
+      - name: "Patch head.S probe 3 busy after __cpu_setup"
         run: |
           set -euo pipefail
           cd kernel54
@@ -125,38 +125,32 @@ jobs:
           from pathlib import Path
           p = Path("arch/arm64/kernel/head.S")
           text = p.read_text()
-          # Strip probe 1: remove busy loop after bl set_cpu_boot_mode_flag
-          old1 = 'bl\tset_cpu_boot_mode_flag\n1:\n\tb\t1b\n\tbl\t__create_page_tables'
-          new1 = 'bl\tset_cpu_boot_mode_flag\n\tbl\t__create_page_tables'
-          if old1 in text:
-              text = text.replace(old1, new1, 1)
-              print("stripped probe 1")
-          # Insert probe 2: busy loop after bl __create_page_tables
-          old2 = 'bl\t__create_page_tables\n'
-          new2 = 'bl\t__create_page_tables\n1:\n\tb\t1b\n'
-          # Only replace in stext context (the first occurrence after set_cpu_boot_mode_flag)
-          # Use the surrounding context to be safe
-          old2_ctx = 'bl\tset_cpu_boot_mode_flag\n\tbl\t__create_page_tables\n'
-          new2_ctx = 'bl\tset_cpu_boot_mode_flag\n\tbl\t__create_page_tables\n1:\n\tb\t1b\n'
-          if old2_ctx in text:
-              text = text.replace(old2_ctx, new2_ctx, 1)
-          elif old1 in text:
-              # probe 1 wasn't there, try direct
-              # Find in stext: after set_cpu_boot_mode_flag line
-              pass
+          # Strip probe 2: remove busy loop after bl __create_page_tables
+          old2 = 'bl\t__create_page_tables\n1:\n\tb\t1b\n'
+          new2 = 'bl\t__create_page_tables\n'
+          if old2 in text:
+              text = text.replace(old2, new2, 1)
+              print("stripped probe 2")
+          # Insert probe 3: busy loop after bl __cpu_setup in stext
+          # stext has: bl __cpu_setup ... b __primary_switch
+          # Match the comment line that follows bl __cpu_setup in stext
+          old3 = 'bl\t__cpu_setup\t\t\t// initialise processor\n\tb\t__primary_switch'
+          new3 = 'bl\t__cpu_setup\t\t\t// initialise processor\n1:\n\tb\t1b\n\tb\t__primary_switch'
+          if old3 in text:
+              text = text.replace(old3, new3, 1)
           else:
-              # Try direct replacement of __create_page_tables followed by bl __cpu_setup
-              old2b = 'bl\t__create_page_tables\n\t/*'
-              new2b = 'bl\t__create_page_tables\n1:\n\tb\t1b\n\t/*'
-              if old2b in text:
-                  text = text.replace(old2b, new2b, 1)
+              # Fallback: try without comment
+              old3b = 'bl\t__cpu_setup\n\tb\t__primary_switch'
+              new3b = 'bl\t__cpu_setup\n1:\n\tb\t1b\n\tb\t__primary_switch'
+              if old3b in text:
+                  text = text.replace(old3b, new3b, 1)
               else:
-                  print("ERROR: cannot find __create_page_tables marker")
+                  print("ERROR: cannot find __cpu_setup marker in stext")
                   exit(1)
           p.write_text(text)
-          print("head.S patched: busy loop inserted after bl __create_page_tables")
+          print("head.S patched: busy loop inserted after bl __cpu_setup")
           PYEOF
-          grep -A12 "ENTRY(stext)" arch/arm64/kernel/head.S | head -16
+          grep -A14 "ENTRY(stext)" arch/arm64/kernel/head.S | head -18
 
       - name: Build kernel
         run: |
