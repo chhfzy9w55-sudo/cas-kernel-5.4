@@ -117,7 +117,7 @@ jobs:
           key: kernel-build-out-v7
           restore-keys: |
             kernel-build-out-
-      - name: "Patch head.S probe 7 busy after bl __relocate_kernel"
+      - name: "Patch head.S probe 8 busy before blr x8"
         run: |
           set -euo pipefail
           cd kernel54
@@ -125,33 +125,36 @@ jobs:
           from pathlib import Path
           p = Path("arch/arm64/kernel/head.S")
           text = p.read_text()
-          # Strip probe 6: remove .Lprobe6a busy loop after bl __enable_mmu
-          old6 = 'bl\t__enable_mmu\n.Lprobe6a:\n\tb\t.Lprobe6a\n\n#ifdef CONFIG_RELOCATABLE'
-          new6 = 'bl\t__enable_mmu\n#ifdef CONFIG_RELOCATABLE'
-          if old6 in text:
-              text = text.replace(old6, new6, 1)
-              print("stripped probe 6")
-          else:
-              if 'bl\t__enable_mmu\n#ifdef CONFIG_RELOCATABLE' in text:
-                  print("probe 6 not found (already clean)")
-              else:
-                  print("ERROR: __enable_mmu / CONFIG_RELOCATABLE marker unexpected")
-                  exit(1)
-          # Insert probe 7: busy loop after bl __relocate_kernel
-          # The source has: bl __relocate_kernel followed by #ifdef CONFIG_RANDOMIZE_BASE
-          old7 = 'bl\t__relocate_kernel\n#ifdef CONFIG_RANDOMIZE_BASE'
-          new7 = 'bl\t__relocate_kernel\n.Lprobe7:\n\tb\t.Lprobe7\n\n#ifdef CONFIG_RANDOMIZE_BASE'
+          # Strip probe 7: remove .Lprobe7 busy loop after bl __relocate_kernel
+          old7 = 'bl\t__relocate_kernel\n.Lprobe7:\n\tb\t.Lprobe7\n\n#ifdef CONFIG_RANDOMIZE_BASE'
+          new7 = 'bl\t__relocate_kernel\n#ifdef CONFIG_RANDOMIZE_BASE'
           if old7 in text:
               text = text.replace(old7, new7, 1)
-              print("inserted probe 7 after bl __relocate_kernel")
+              print("stripped probe 7")
           else:
-              if '.Lprobe7:' in text:
-                  print("probe 7 already present")
+              if 'bl\t__relocate_kernel\n#ifdef CONFIG_RANDOMIZE_BASE' in text:
+                  print("probe 7 not found (already clean)")
               else:
-                  print("ERROR: cannot find bl __relocate_kernel / CONFIG_RANDOMIZE_BASE marker")
+                  print("ERROR: __relocate_kernel / CONFIG_RANDOMIZE_BASE marker unexpected")
+                  exit(1)
+          # Insert probe 8: busy loop after adrp x0, before blr x8
+          # Source pattern:
+          #   ldr x8, =__primary_switched
+          #   adrp x0, __PHYS_OFFSET
+          #   blr x8
+          old8 = 'adrp\tx0, __PHYS_OFFSET\n\tblr\tx8'
+          new8 = 'adrp\tx0, __PHYS_OFFSET\n.Lprobe8:\n\tb\t.Lprobe8\n\tblr\tx8'
+          if old8 in text:
+              text = text.replace(old8, new8, 1)
+              print("inserted probe 8 before blr x8")
+          else:
+              if '.Lprobe8:' in text:
+                  print("probe 8 already present")
+              else:
+                  print("ERROR: cannot find adrp x0 / blr x8 marker")
                   exit(1)
           p.write_text(text)
-          print("head.S patched: probe 7 busy loop after bl __relocate_kernel")
+          print("head.S patched: probe 8 busy loop before blr x8")
           PYEOF
           grep -A10 "^__primary_switch:" arch/arm64/kernel/head.S | head -14
 
