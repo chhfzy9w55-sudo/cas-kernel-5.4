@@ -117,7 +117,7 @@ jobs:
           key: kernel-build-out-v7
           restore-keys: |
             kernel-build-out-
-      - name: "Patch head.S probe 6 busy after bl __enable_mmu"
+      - name: "Patch head.S probe 7 busy after bl __relocate_kernel"
         run: |
           set -euo pipefail
           cd kernel54
@@ -125,32 +125,33 @@ jobs:
           from pathlib import Path
           p = Path("arch/arm64/kernel/head.S")
           text = p.read_text()
-          # Strip probe 5: remove busy loop before bl __enable_mmu
-          old5 = 'adrp\tx1, init_pg_dir\n1:\n\tb\t1b\n\tbl\t__enable_mmu'
-          new5 = 'adrp\tx1, init_pg_dir\n\tbl\t__enable_mmu'
-          if old5 in text:
-              text = text.replace(old5, new5, 1)
-              print("stripped probe 5")
-          else:
-              if 'adrp\tx1, init_pg_dir\n\tbl\t__enable_mmu' in text:
-                  print("probe 5 not found (already clean)")
-              else:
-                  print("ERROR: __enable_mmu call site unexpected")
-                  exit(1)
-          # Insert probe 6: busy loop after bl __enable_mmu (before CONFIG_RELOCATABLE block)
-          old6 = 'bl\t__enable_mmu\n#ifdef CONFIG_RELOCATABLE'
-          new6 = 'bl\t__enable_mmu\n.Lprobe6a:\n\tb\t.Lprobe6a\n\n#ifdef CONFIG_RELOCATABLE'
+          # Strip probe 6: remove .Lprobe6a busy loop after bl __enable_mmu
+          old6 = 'bl\t__enable_mmu\n.Lprobe6a:\n\tb\t.Lprobe6a\n\n#ifdef CONFIG_RELOCATABLE'
+          new6 = 'bl\t__enable_mmu\n#ifdef CONFIG_RELOCATABLE'
           if old6 in text:
               text = text.replace(old6, new6, 1)
-              print("inserted probe 6 after bl __enable_mmu")
+              print("stripped probe 6")
           else:
-              if '.Lprobe6a:' in text:
-                  print("probe 6 already present")
+              if 'bl\t__enable_mmu\n#ifdef CONFIG_RELOCATABLE' in text:
+                  print("probe 6 not found (already clean)")
               else:
-                  print("ERROR: cannot find bl __enable_mmu / CONFIG_RELOCATABLE marker")
+                  print("ERROR: __enable_mmu / CONFIG_RELOCATABLE marker unexpected")
+                  exit(1)
+          # Insert probe 7: busy loop after bl __relocate_kernel
+          # The source has: bl __relocate_kernel followed by #ifdef CONFIG_RANDOMIZE_BASE
+          old7 = 'bl\t__relocate_kernel\n#ifdef CONFIG_RANDOMIZE_BASE'
+          new7 = 'bl\t__relocate_kernel\n.Lprobe7:\n\tb\t.Lprobe7\n\n#ifdef CONFIG_RANDOMIZE_BASE'
+          if old7 in text:
+              text = text.replace(old7, new7, 1)
+              print("inserted probe 7 after bl __relocate_kernel")
+          else:
+              if '.Lprobe7:' in text:
+                  print("probe 7 already present")
+              else:
+                  print("ERROR: cannot find bl __relocate_kernel / CONFIG_RANDOMIZE_BASE marker")
                   exit(1)
           p.write_text(text)
-          print("head.S patched: probe 6 busy loop after bl __enable_mmu")
+          print("head.S patched: probe 7 busy loop after bl __relocate_kernel")
           PYEOF
           grep -A10 "^__primary_switch:" arch/arm64/kernel/head.S | head -14
 
