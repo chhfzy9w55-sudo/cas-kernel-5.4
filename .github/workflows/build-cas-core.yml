@@ -117,7 +117,7 @@ jobs:
           key: kernel-build-out-v7
           restore-keys: |
             kernel-build-out-
-      - name: "Patch head.S probe 3 busy after __cpu_setup"
+      - name: "Patch head.S probe 4 busy at __primary_switch entry"
         run: |
           set -euo pipefail
           cd kernel54
@@ -125,32 +125,36 @@ jobs:
           from pathlib import Path
           p = Path("arch/arm64/kernel/head.S")
           text = p.read_text()
-          # Strip probe 2: remove busy loop after bl __create_page_tables
-          old2 = 'bl\t__create_page_tables\n1:\n\tb\t1b\n'
-          new2 = 'bl\t__create_page_tables\n'
-          if old2 in text:
-              text = text.replace(old2, new2, 1)
-              print("stripped probe 2")
-          # Insert probe 3: busy loop after bl __cpu_setup in stext
-          # stext has: bl __cpu_setup ... b __primary_switch
-          # Match the comment line that follows bl __cpu_setup in stext
-          old3 = 'bl\t__cpu_setup\t\t\t// initialise processor\n\tb\t__primary_switch'
-          new3 = 'bl\t__cpu_setup\t\t\t// initialise processor\n1:\n\tb\t1b\n\tb\t__primary_switch'
-          if old3 in text:
-              text = text.replace(old3, new3, 1)
+          # Strip probe 3: remove busy loop after bl __cpu_setup in stext
+          old3a = 'bl\t__cpu_setup\t\t\t// initialise processor\n1:\n\tb\t1b\n\tb\t__primary_switch'
+          new3 = 'bl\t__cpu_setup\t\t\t// initialise processor\n\tb\t__primary_switch'
+          if old3a in text:
+              text = text.replace(old3a, new3, 1)
+              print("stripped probe 3 (with comment)")
           else:
-              # Fallback: try without comment
-              old3b = 'bl\t__cpu_setup\n\tb\t__primary_switch'
-              new3b = 'bl\t__cpu_setup\n1:\n\tb\t1b\n\tb\t__primary_switch'
+              old3b = 'bl\t__cpu_setup\n1:\n\tb\t1b\n\tb\t__primary_switch'
+              new3b = 'bl\t__cpu_setup\n\tb\t__primary_switch'
               if old3b in text:
                   text = text.replace(old3b, new3b, 1)
+                  print("stripped probe 3 (fallback)")
               else:
-                  print("ERROR: cannot find __cpu_setup marker in stext")
+                  print("probe 3 not found (already clean)")
+          # Insert probe 4: busy loop at __primary_switch entry (before any #ifdef)
+          old4 = '__primary_switch:\n#ifdef CONFIG_RANDOMIZE_BASE'
+          new4 = '__primary_switch:\n1:\n\tb\t1b\n\n#ifdef CONFIG_RANDOMIZE_BASE'
+          if old4 in text:
+              text = text.replace(old4, new4, 1)
+              print("inserted probe 4 at __primary_switch entry")
+          else:
+              if '__primary_switch:\n1:\n\tb\t1b' in text:
+                  print("probe 4 already present")
+              else:
+                  print("ERROR: cannot find __primary_switch marker")
                   exit(1)
           p.write_text(text)
-          print("head.S patched: busy loop inserted after bl __cpu_setup")
+          print("head.S patched: probe 4 busy loop at __primary_switch entry")
           PYEOF
-          grep -A14 "ENTRY(stext)" arch/arm64/kernel/head.S | head -18
+          grep -A8 "^__primary_switch:" arch/arm64/kernel/head.S | head -12
 
       - name: Build kernel
         run: |
