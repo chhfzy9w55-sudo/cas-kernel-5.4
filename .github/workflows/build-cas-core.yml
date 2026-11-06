@@ -108,7 +108,7 @@ jobs:
         run: |
           cd kernel54
           echo "=== 检查 Kconfig 和 Makefile 的配置符号 ==="
-          grep -nE 'SERIAL_MSM_GENI(_CONSOLE|_EARLY_CONSOLE)?' drivers/tty/serial/Kconfig drivers/tty/serial/Makefile || true
+          grep -nE 'SERIAL_QCOM_GENI(_CONSOLE|_EARLY_CONSOLE)?|SERIAL_MSM_GENI' drivers/tty/serial/Kconfig drivers/tty/serial/Makefile || true
       # ===== 缓存 2: 编译输出 (增量编译) =====
       - name: Restore build output cache
         uses: actions/cache/restore@v4
@@ -199,12 +199,12 @@ jobs:
             echo "=== 缓存命中，使用已有 .config ==="
           fi
           # ====== 强制启用 earlycon/console 配置 (每次都执行, 幂等) ======
-          echo "=== 启用 SERIAL_MSM_GENI_CONSOLE (earlycon + console) ==="
+          echo "=== 启用 SERIAL_QCOM_GENI_CONSOLE (earlycon + console) ==="
           # v6: 恢复串口驱动 + 禁用 EFI stub (XBL 不认 MZ 头)
-          bash scripts/config --file out/.config --enable SERIAL_MSM_GENI
-          bash scripts/config --file out/.config --enable SERIAL_MSM_GENI_CONSOLE
-          bash scripts/config --file out/.config --enable SERIAL_CORE_CONSOLE
-          bash scripts/config --file out/.config --enable SERIAL_EARLYCON
+          bash scripts/config --file out/.config --enable ARCH_QCOM
+          bash scripts/config --file out/.config --enable QCOM_GENI_SE
+          bash scripts/config --file out/.config --enable SERIAL_QCOM_GENI
+          bash scripts/config --file out/.config --enable SERIAL_QCOM_GENI_CONSOLE
           # 强制关闭 EFI stub - XBL 只认纯 ARM64 Image
           bash scripts/config --file out/.config --disable EFI
           bash scripts/config --file out/.config --disable EFI_STUB
@@ -230,10 +230,10 @@ jobs:
               CONFIG_COMMON_CLK_QCOM \
               CONFIG_SCSI_UFSHCD \
               CONFIG_REGULATOR \
-              CONFIG_SERIAL_MSM_GENI \
-              CONFIG_SERIAL_MSM_GENI_CONSOLE \
-              CONFIG_SERIAL_CORE_CONSOLE \
-              CONFIG_SERIAL_EARLYCON \
+              CONFIG_SERIAL_QCOM_GENI \
+              CONFIG_SERIAL_QCOM_GENI_CONSOLE \
+              CONFIG_QCOM_GENI_SE \
+              CONFIG_ARCH_QCOM \
               CONFIG_EFI\
               CONFIG_DRM_MSM
           do
@@ -247,11 +247,19 @@ jobs:
           echo "=== 检查 Image 头部 (必须不是 MZ) ==="
           xxd -l 16 out/arch/arm64/boot/Image
           echo "=== 检查 .o 文件是否生成 ==="
-          find out/drivers/tty/serial -name 'msm_geni_serial*.o' -print
+          find out/drivers/tty/serial -name 'qcom_geni_serial*.o' -print
           echo "=== 检查 Image 中是否有 earlycon 字符串 ==="
-          strings out/arch/arm64/boot/Image | grep -i 'msm_geni' || echo "WARN: msm_geni not found in Image!"
+          strings out/arch/arm64/boot/Image | grep -i 'qcom_geni' || echo "WARN: qcom_geni not found in Image!"
           echo "=== 检查 Image 中是否有 earlycon 注册函数 ==="
           strings out/arch/arm64/boot/Image | grep -i 'geni_serial_earlycon' || echo "WARN: geni_serial_earlycon not found!"
+      - name: "Verify B1 serial config and symbols"
+        if: always()
+        run: |
+          cd kernel54
+          echo "===== 验证最终 .config ====="
+          grep -E '^(CONFIG_ARCH_QCOM|CONFIG_QCOM_GENI_SE|CONFIG_SERIAL_CORE|CONFIG_SERIAL_CORE_CONSOLE|CONFIG_SERIAL_EARLYCON|CONFIG_SERIAL_QCOM_GENI|CONFIG_SERIAL_QCOM_GENI_CONSOLE)=' out/.config || echo "FATAL: config entries missing!"
+          echo "===== 验证内核符号 ====="
+          nm -an out/vmlinux | grep -E 'qcom_geni_serial_earlycon_setup|qcom_geni_serial_console_write' || echo "FATAL: earlycon symbol missing in vmlinux!"
       - name: Show errors
         if: always()
         run: |
