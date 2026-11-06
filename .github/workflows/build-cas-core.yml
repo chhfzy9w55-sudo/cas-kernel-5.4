@@ -117,7 +117,7 @@ jobs:
           key: kernel-build-out-v7
           restore-keys: |
             kernel-build-out-
-      - name: "Patch head.S probe 8 busy before blr x8"
+      - name: "Patch head.S probe 9 busy at __primary_switched entry"
         run: |
           set -euo pipefail
           cd kernel54
@@ -125,36 +125,32 @@ jobs:
           from pathlib import Path
           p = Path("arch/arm64/kernel/head.S")
           text = p.read_text()
-          # Strip probe 7: remove .Lprobe7 busy loop after bl __relocate_kernel
-          old7 = 'bl\t__relocate_kernel\n.Lprobe7:\n\tb\t.Lprobe7\n\n#ifdef CONFIG_RANDOMIZE_BASE'
-          new7 = 'bl\t__relocate_kernel\n#ifdef CONFIG_RANDOMIZE_BASE'
-          if old7 in text:
-              text = text.replace(old7, new7, 1)
-              print("stripped probe 7")
-          else:
-              if 'bl\t__relocate_kernel\n#ifdef CONFIG_RANDOMIZE_BASE' in text:
-                  print("probe 7 not found (already clean)")
-              else:
-                  print("ERROR: __relocate_kernel / CONFIG_RANDOMIZE_BASE marker unexpected")
-                  exit(1)
-          # Insert probe 8: busy loop after adrp x0, before blr x8
-          # Source pattern:
-          #   ldr x8, =__primary_switched
-          #   adrp x0, __PHYS_OFFSET
-          #   blr x8
-          old8 = 'adrp\tx0, __PHYS_OFFSET\n\tblr\tx8'
-          new8 = 'adrp\tx0, __PHYS_OFFSET\n.Lprobe8:\n\tb\t.Lprobe8\n\tblr\tx8'
+          # Strip probe 8: remove .Lprobe8 busy loop before blr x8
+          old8 = 'adrp\tx0, __PHYS_OFFSET\n.Lprobe8:\n\tb\t.Lprobe8\n\tblr\tx8'
+          new8 = 'adrp\tx0, __PHYS_OFFSET\n\tblr\tx8'
           if old8 in text:
               text = text.replace(old8, new8, 1)
-              print("inserted probe 8 before blr x8")
+              print("stripped probe 8")
           else:
-              if '.Lprobe8:' in text:
-                  print("probe 8 already present")
+              if 'adrp\tx0, __PHYS_OFFSET\n\tblr\tx8' in text:
+                  print("probe 8 not found (already clean)")
               else:
-                  print("ERROR: cannot find adrp x0 / blr x8 marker")
+                  print("ERROR: adrp x0 / blr x8 marker unexpected")
+                  exit(1)
+          # Insert probe 9: busy loop at __primary_switched entry (before first instruction)
+          old9 = '__primary_switched:\n\tadrp'
+          new9 = '__primary_switched:\n.Lprobe9:\n\tb\t.Lprobe9\n\tadrp'
+          if old9 in text:
+              text = text.replace(old9, new9, 1)
+              print("inserted probe 9 at __primary_switched entry")
+          else:
+              if '.Lprobe9:' in text:
+                  print("probe 9 already present")
+              else:
+                  print("ERROR: cannot find __primary_switched: / adrp marker")
                   exit(1)
           p.write_text(text)
-          print("head.S patched: probe 8 busy loop before blr x8")
+          print("head.S patched: probe 9 busy loop at __primary_switched entry")
           PYEOF
           grep -A10 "^__primary_switch:" arch/arm64/kernel/head.S | head -14
 
