@@ -117,7 +117,7 @@ jobs:
           key: kernel-build-out-v7
           restore-keys: |
             kernel-build-out-
-      - name: "Patch head.S probe 9 busy at __primary_switched entry"
+      - name: "Strip all probes from head.S (B0 clean build)"
         run: |
           set -euo pipefail
           cd kernel54
@@ -125,32 +125,30 @@ jobs:
           from pathlib import Path
           p = Path("arch/arm64/kernel/head.S")
           text = p.read_text()
-          # Strip probe 8: remove .Lprobe8 busy loop before blr x8
-          old8 = 'adrp\tx0, __PHYS_OFFSET\n.Lprobe8:\n\tb\t.Lprobe8\n\tblr\tx8'
-          new8 = 'adrp\tx0, __PHYS_OFFSET\n\tblr\tx8'
-          if old8 in text:
-              text = text.replace(old8, new8, 1)
-              print("stripped probe 8")
-          else:
-              if 'adrp\tx0, __PHYS_OFFSET\n\tblr\tx8' in text:
-                  print("probe 8 not found (already clean)")
-              else:
-                  print("ERROR: adrp x0 / blr x8 marker unexpected")
-                  exit(1)
-          # Insert probe 9: busy loop at __primary_switched entry (before first instruction)
-          old9 = '__primary_switched:\n\tadrp'
-          new9 = '__primary_switched:\n.Lprobe9:\n\tb\t.Lprobe9\n\tadrp'
+          # Strip probe 9: remove .Lprobe9 busy loop at __primary_switched entry
+          old9 = '__primary_switched:\n.Lprobe9:\n\tb\t.Lprobe9\n\tadrp'
+          new9 = '__primary_switched:\n\tadrp'
           if old9 in text:
               text = text.replace(old9, new9, 1)
-              print("inserted probe 9 at __primary_switched entry")
+              print("stripped probe 9")
           else:
-              if '.Lprobe9:' in text:
-                  print("probe 9 already present")
+              if '__primary_switched:\n\tadrp' in text:
+                  print("probe 9 not found (already clean)")
               else:
-                  print("ERROR: cannot find __primary_switched: / adrp marker")
+                  print("ERROR: __primary_switched marker unexpected")
                   exit(1)
+          # Verify NO probe residue of any kind
+          residue = []
+          for label in ['.Lprobe6a', '.Lprobe7', '.Lprobe8', '.Lprobe9']:
+              if label in text:
+                  residue.append(label)
+          if '1:\n\tb\t1b' in text:
+              residue.append('1:/b 1b busy')
+          if residue:
+              print("ERROR: probe residue found:", residue)
+              exit(1)
+          print("VERIFIED: head.S is pure original, zero probes")
           p.write_text(text)
-          print("head.S patched: probe 9 busy loop at __primary_switched entry")
           PYEOF
           grep -A10 "^__primary_switch:" arch/arm64/kernel/head.S | head -14
 
