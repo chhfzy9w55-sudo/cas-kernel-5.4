@@ -152,12 +152,37 @@ jobs:
           PYEOF
           grep -A10 "^__primary_switch:" arch/arm64/kernel/head.S | head -14
 
+      - name: "Insert P10 probe into init/main.c (start_kernel only)"
+        run: |
+          set -euo pipefail
+          cd kernel54
+          python3 << 'PYEOF2'
+          from pathlib import Path
+          p = Path("init/main.c")
+          text = p.read_text()
+          anchor = "char *command_line;\n\tchar *after_dashes;\n\n\tset_task_stack_end_magic(&init_task);"
+          probe  = "char *command_line;\n\tchar *after_dashes;\n\n\tfor (;;)\n\t\tcpu_relax();\n\n\tset_task_stack_end_magic(&init_task);"
+          if probe in text:
+              print("P10 already present (idempotent)")
+          elif anchor in text:
+              text = text.replace(anchor, probe, 1)
+              p.write_text(text)
+              print("P10 inserted into start_kernel")
+          else:
+              print("ERROR: anchor not found in init/main.c")
+              raise SystemExit(1)
+          assert "P11" not in text and "P12" not in text, "unexpected P11/P12 found"
+          assert text.count("for (;;)") == 1, "more than one for(;;) found"
+          print("VERIFIED: exactly one P10 loop, no P11/P12, no other edits")
+          PYEOF2
+          grep -n -B2 -A5 'cpu_relax' init/main.c | head -12
+
       - name: Build kernel
         run: |
           set -o pipefail
           cd kernel54
           # 强制重编译 head.S (CurrentEL time probe patch已在上一步应用)
-          rm -f out/arch/arm64/kernel/head.o out/arch/arm64/kernel/head.s out/arch/arm64/boot/Image
+          rm -f out/arch/arm64/kernel/head.o out/arch/arm64/kernel/head.s out/init/main.o out/init/built-in.o out/arch/arm64/boot/Image
           touch arch/arm64/kernel/head.S
           export ARCH=arm64
           export LLVM=1
@@ -262,6 +287,19 @@ jobs:
           grep -E '^(CONFIG_ARCH_QCOM|CONFIG_MSM_GENI_SE|CONFIG_SERIAL_CORE|CONFIG_SERIAL_CORE_CONSOLE|CONFIG_SERIAL_EARLYCON|CONFIG_SERIAL_MSM_GENI|CONFIG_SERIAL_MSM_GENI_CONSOLE|CONFIG_SERIAL_MSM_GENI_EARLY_CONSOLE)=' out/.config || echo "FATAL: config entries missing!"
           echo "===== 验证内核符号 ====="
           nm -an out/vmlinux | grep -E 'msm_geni_serial_earlycon_setup|msm_geni_serial_console_write' || echo "FATAL: earlycon symbol missing in vmlinux!"
+      - name: "Verify P10 probe in vmlinux disassembly"
+        if: always()
+        run: |
+          cd kernel54
+          echo "===== start_kernel first instructions (objdump) ====="
+          llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk '/<start_kernel>:/,/^$/' | head -45
+          echo "===== yield + branch loop count inside start_kernel ====="
+          llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk '/<start_kernel>:/,/^$/' > /tmp/sk.asm
+          grep -c 'yield' /tmp/sk.asm || true
+          grep -n -m4 -E 'yield|^.*\bb\b' /tmp/sk.asm | head -10
+          echo "===== confirm set_task_stack_end_magic call present after loop ====="
+          grep -c 'set_task_stack_end_magic' /tmp/sk.asm || true
+
       - name: Show errors
         if: always()
         run: |
