@@ -160,29 +160,27 @@ jobs:
           from pathlib import Path
           p = Path("init/main.c")
           text = p.read_text()
-
-          # P11 anchor: between setup_arch and setup_command_line
           anchor = "\tsetup_arch(&command_line);\n\tsetup_command_line(command_line);"
-          probe  = "\tsetup_arch(&command_line);\n\n\t/* P11: setup_arch() returned */\n\tfor (;;)\n\t\tcpu_relax();\n\n\tsetup_command_line(command_line);"
-
-          if probe in text:
+          repl   = "\tsetup_arch(&command_line);\n\n\t/* P11: setup_arch() returned */\n\tfor (;;)\n\t\tcpu_relax();\n\n\tsetup_command_line(command_line);"
+          if "P11: setup_arch() returned" in text:
               print("P11 already present (idempotent)")
           elif anchor in text:
-              text = text.replace(anchor, probe, 1)
+              assert text.count(anchor) == 1
+              text = text.replace(anchor, repl, 1)
               p.write_text(text)
               print("P11 inserted after setup_arch")
           else:
-              print("ERROR: anchor not found")
+              print("ERROR: anchor not found in init/main.c")
               raise SystemExit(1)
-
-          # Verify: exactly one for(;;) in file, no P10/P12 residue
-          assert text.count("for (;;)") == 1, "expected exactly 1 for(;;), got %d" % text.count("for (;;)")
-          # Ensure no P10 leftover (should NOT have cpu_relax before set_task_stack_end_magic)
-          p10_old = "for (;;)\n\t\tcpu_relax();\n\n\tset_task_stack_end_magic"
-          assert p10_old not in text, "P10 probe still present!"
-          print("VERIFIED: P11 only, no P10/P12, no other edits")
+          assert text.count("for (;;)") == 1, "must be exactly one for(;;)"
+          i_sa = text.find("setup_arch(&command_line);")
+          i_lp = text.find("for (;;)")
+          i_sc = text.find("setup_command_line(command_line);")
+          assert i_sa < i_lp < i_sc, "loop must sit between setup_arch and setup_command_line"
+          assert "P10" not in text
+          print("VERIFIED: single P11 loop between setup_arch and setup_command_line; no P10")
           PYEOF2
-          grep -n -B2 -A8 'P11' init/main.c | head -16
+          grep -n -B2 -A4 'P11: setup_arch' init/main.c
 
       - name: Build kernel
         run: |
@@ -298,16 +296,14 @@ jobs:
         if: always()
         run: |
           cd kernel54
-          echo "===== start_kernel first 60 instructions ====="
-          llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk '/<start_kernel>:/,/^$/' | head -60
-          echo "===== yield + branch-back count in start_kernel ====="
+          echo "===== start_kernel: setup_arch call then yield loop ====="
           llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk '/<start_kernel>:/,/^$/' > /tmp/sk.asm
-          grep -c 'yield' /tmp/sk.asm || true
-          grep -n -m6 -E 'yield|\bb\b.*<start_kernel>' /tmp/sk.asm | head -10
-          echo "===== check setup_arch call before yield ====="
-          grep -n 'setup_arch' /tmp/sk.asm | head -3
-          echo "===== check setup_command_line after yield (should be absent=unreachable) ====="
-          grep -c 'setup_command_line' /tmp/sk.asm || true
+          echo "--- bl setup_arch / bl setup_command_line ---"
+          grep -n -E 'bl\s+.*<(setup_arch|setup_command_line)>' /tmp/sk.asm | head -5
+          echo "--- yield + backward branch (the loop) ---"
+          grep -n -B1 -A1 'yield' /tmp/sk.asm | head -12
+          echo "--- counts ---"
+          echo -n "yield count: "; grep -c 'yield' /tmp/sk.asm || true
 
       - name: Show errors
         if: always()
