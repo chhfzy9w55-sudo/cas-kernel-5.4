@@ -152,7 +152,7 @@ jobs:
           PYEOF
           grep -A10 "^__primary_switch:" arch/arm64/kernel/head.S | head -14
 
-      - name: "Insert P11 probe into init/main.c (after setup_arch)"
+      - name: "Insert P12 probe into init/main.c (after mm_init)"
         run: |
           set -euo pipefail
           cd kernel54
@@ -160,27 +160,28 @@ jobs:
           from pathlib import Path
           p = Path("init/main.c")
           text = p.read_text()
-          anchor = "\tsetup_arch(&command_line);\n\tsetup_command_line(command_line);"
-          repl   = "\tsetup_arch(&command_line);\n\n\t/* P11: setup_arch() returned */\n\tfor (;;)\n\t\tcpu_relax();\n\n\tsetup_command_line(command_line);"
-          if "P11: setup_arch() returned" in text:
-              print("P11 already present (idempotent)")
+          anchor = "\ttrap_init();\n\tmm_init();\n\n\tftrace_init();"
+          repl   = "\ttrap_init();\n\tmm_init();\n\n\t/* P12: mm_init() returned */\n\tfor (;;)\n\t\tcpu_relax();\n\n\tftrace_init();"
+          if "P12: mm_init() returned" in text:
+              print("P12 already present (idempotent)")
           elif anchor in text:
               assert text.count(anchor) == 1
               text = text.replace(anchor, repl, 1)
               p.write_text(text)
-              print("P11 inserted after setup_arch")
+              print("P12 inserted after mm_init")
           else:
               print("ERROR: anchor not found in init/main.c")
               raise SystemExit(1)
           assert text.count("for (;;)") == 1, "must be exactly one for(;;)"
-          i_sa = text.find("setup_arch(&command_line);")
+          i_mm = text.find("mm_init();")
           i_lp = text.find("for (;;)")
-          i_sc = text.find("setup_command_line(command_line);")
-          assert i_sa < i_lp < i_sc, "loop must sit between setup_arch and setup_command_line"
+          i_ft = text.find("ftrace_init();")
+          assert i_mm < i_lp < i_ft, "loop must sit between mm_init and ftrace_init"
           assert "P10" not in text
-          print("VERIFIED: single P11 loop between setup_arch and setup_command_line; no P10")
+          assert "P11" not in text
+          print("VERIFIED: single P12 loop between mm_init and ftrace_init; no P10/P11")
           PYEOF2
-          grep -n -B2 -A4 'P11: setup_arch' init/main.c
+          grep -n -B2 -A4 'P12: mm_init' init/main.c
 
       - name: Build kernel
         run: |
@@ -292,14 +293,14 @@ jobs:
           grep -E '^(CONFIG_ARCH_QCOM|CONFIG_MSM_GENI_SE|CONFIG_SERIAL_CORE|CONFIG_SERIAL_CORE_CONSOLE|CONFIG_SERIAL_EARLYCON|CONFIG_SERIAL_MSM_GENI|CONFIG_SERIAL_MSM_GENI_CONSOLE|CONFIG_SERIAL_MSM_GENI_EARLY_CONSOLE)=' out/.config || echo "FATAL: config entries missing!"
           echo "===== 验证内核符号 ====="
           nm -an out/vmlinux | grep -E 'msm_geni_serial_earlycon_setup|msm_geni_serial_console_write' || echo "FATAL: earlycon symbol missing in vmlinux!"
-      - name: "Verify P11 probe in vmlinux disassembly"
+      - name: "Verify P12 probe in vmlinux disassembly"
         if: always()
         run: |
           cd kernel54
-          echo "===== start_kernel: setup_arch call then yield loop ====="
+          echo "===== start_kernel: mm_init call then yield loop ====="
           llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk '/<start_kernel>:/,/^$/' > /tmp/sk.asm
-          echo "--- bl setup_arch / bl setup_command_line ---"
-          grep -n -E 'bl\s+.*<(setup_arch|setup_command_line)>' /tmp/sk.asm | head -5
+          echo "--- bl mm_init / bl ftrace_init ---"
+          grep -n -E 'bl\s+.*<(mm_init|ftrace_init)>' /tmp/sk.asm | head -5
           echo "--- yield + backward branch (the loop) ---"
           grep -n -B1 -A1 'yield' /tmp/sk.asm | head -12
           echo "--- counts ---"
