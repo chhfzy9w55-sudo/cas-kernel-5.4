@@ -152,7 +152,7 @@ jobs:
           PYEOF
           grep -A10 "^__primary_switch:" arch/arm64/kernel/head.S | head -14
 
-      - name: "Insert P13 probe into init/main.c (before do_basic_setup)"
+      - name: "Insert P14 probe into init/main.c (after do_basic_setup)"
         run: |
           set -euo pipefail
           cd kernel54
@@ -160,29 +160,30 @@ jobs:
           from pathlib import Path
           p = Path("init/main.c")
           text = p.read_text()
-          anchor = "\tpage_ext_init();\n\n\tdo_basic_setup();"
-          repl   = "\tpage_ext_init();\n\n\t/* P13: before do_basic_setup() */\n\tfor (;;)\n\t\tcpu_relax();\n\n\tdo_basic_setup();"
-          if "P13: before do_basic_setup" in text:
-              print("P13 already present (idempotent)")
+          anchor = "\tdo_basic_setup();\n\n\t/* Open the /dev/console on the rootfs, this should never fail */"
+          repl   = "\tdo_basic_setup();\n\n\t/* P14: do_basic_setup() returned */\n\tfor (;;)\n\t\tcpu_relax();\n\n\t/* Open the /dev/console on the rootfs, this should never fail */"
+          if "P14: do_basic_setup() returned" in text:
+              print("P14 already present (idempotent)")
           elif anchor in text:
               assert text.count(anchor) == 1
               text = text.replace(anchor, repl, 1)
               p.write_text(text)
-              print("P13 inserted before do_basic_setup")
+              print("P14 inserted after do_basic_setup")
           else:
               print("ERROR: anchor not found in init/main.c")
               raise SystemExit(1)
           assert text.count("for (;;)") == 1, "must be exactly one for(;;)"
-          i_pe = text.find("page_ext_init();")
-          i_lp = text.find("for (;;)")
           i_db = text.find("do_basic_setup();")
-          assert i_pe < i_lp < i_db, "loop must sit between page_ext_init and do_basic_setup"
+          i_lp = text.find("for (;;)")
+          i_ko = text.find("ksys_open")
+          assert i_db < i_lp < i_ko, "loop must sit between do_basic_setup and ksys_open"
           assert "P10" not in text
           assert "P11" not in text
           assert "P12" not in text
-          print("VERIFIED: single P13 loop between page_ext_init and do_basic_setup; no P10/P11/P12")
+          assert "P13" not in text
+          print("VERIFIED: single P14 loop between do_basic_setup and ksys_open; no P10/P11/P12/P13")
           PYEOF2
-          grep -n -B2 -A4 'P13: before do_basic_setup' init/main.c
+          grep -n -B2 -A4 'P14: do_basic_setup' init/main.c
 
       - name: Build kernel
         run: |
@@ -294,14 +295,14 @@ jobs:
           grep -E '^(CONFIG_ARCH_QCOM|CONFIG_MSM_GENI_SE|CONFIG_SERIAL_CORE|CONFIG_SERIAL_CORE_CONSOLE|CONFIG_SERIAL_EARLYCON|CONFIG_SERIAL_MSM_GENI|CONFIG_SERIAL_MSM_GENI_CONSOLE|CONFIG_SERIAL_MSM_GENI_EARLY_CONSOLE)=' out/.config || echo "FATAL: config entries missing!"
           echo "===== 验证内核符号 ====="
           nm -an out/vmlinux | grep -E 'msm_geni_serial_earlycon_setup|msm_geni_serial_console_write' || echo "FATAL: earlycon symbol missing in vmlinux!"
-      - name: "Verify P13 probe in vmlinux disassembly"
+      - name: "Verify P14 probe in vmlinux disassembly"
         if: always()
         run: |
           cd kernel54
-          echo "===== kernel_init_freeable: page_ext_init call then yield loop ====="
+          echo "===== kernel_init_freeable: do_basic_setup call then yield loop ====="
           llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk '/<kernel_init_freeable>:/,/^$/' > /tmp/kif.asm
-          echo "--- bl page_ext_init / bl do_basic_setup ---"
-          grep -n -E 'bl\s+.*<(page_ext_init|do_basic_setup)>' /tmp/kif.asm | head -5
+          echo "--- bl do_basic_setup ---"
+          grep -n -E 'bl\s+.*<do_basic_setup>' /tmp/kif.asm | head -3
           echo "--- yield + backward branch (the loop) ---"
           grep -n -B1 -A1 'yield' /tmp/kif.asm | head -12
           echo "--- counts ---"
