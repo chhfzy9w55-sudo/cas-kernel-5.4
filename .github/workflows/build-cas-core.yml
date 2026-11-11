@@ -12,8 +12,13 @@ jobs:
         uses: actions/checkout@v4
       - name: Install deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils curl ca-certificates clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu
+          for attempt in 1 2 3 4 5; do
+            echo "=== apt attempt $attempt ==="
+            sudo apt-get update && sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils curl ca-certificates clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu && break
+            echo "apt attempt $attempt failed, retrying in 30s..."
+            sleep 30
+          done
+          which clang-14 && which aarch64-linux-gnu-gcc && which ld.lld-14
       # ===== 缓存 1: 内核源码 =====
       - name: Cache kernel source
         id: cache-src
