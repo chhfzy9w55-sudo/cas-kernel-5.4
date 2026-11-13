@@ -157,7 +157,7 @@ jobs:
           PYEOF
           grep -A10 "^__primary_switch:" arch/arm64/kernel/head.S | head -14
 
-      - name: "Insert P15-A probe into init/main.c (after initcall level 3)"
+      - name: "Insert P16 probe into init/main.c (before do_initcalls)"
         run: |
           set -euo pipefail
           cd kernel54
@@ -165,39 +165,28 @@ jobs:
           from pathlib import Path
           p = Path("init/main.c")
           text = p.read_text()
-          anchor = ("\tfor (level = 0; level < ARRAY_SIZE(initcall_levels) - 1; level++)\n"
-                    "\t\tdo_initcall_level(level);")
-          repl   = ("\tfor (level = 0; level < ARRAY_SIZE(initcall_levels) - 1; level++) {\n"
-                    "\t\tdo_initcall_level(level);\n"
-                    "\n"
-                    "\t\tif (level == 3) {\n"
-                    "\t\t\t/* P15: after initcall level 3 */\n"
-                    "\t\t\tfor (;;)\n"
-                    "\t\t\t\tcpu_relax();\n"
-                    "\t\t}\n"
-                    "\t}")
-          if "P15: after initcall level 3" in text:
-              print("P15-A already present (idempotent)")
+          anchor = "\tusermodehelper_enable();\n\tdo_initcalls();"
+          repl   = "\tusermodehelper_enable();\n\n\t/* P16: before do_initcalls() */\n\tfor (;;)\n\t\tcpu_relax();\n\n\tdo_initcalls();"
+          if "P16: before do_initcalls" in text:
+              print("P16 already present (idempotent)")
           elif anchor in text:
               assert text.count(anchor) == 1
               text = text.replace(anchor, repl, 1)
               p.write_text(text)
-              print("P15-A inserted (loop wrapped, dead loop after level 3)")
+              print("P16 inserted before do_initcalls")
           else:
               print("ERROR: anchor not found in init/main.c")
               raise SystemExit(1)
           assert text.count("for (;;)") == 1, "must be exactly one for(;;)"
-          assert text.count("if (level == 3)") == 1
-          i_hdr = text.find("for (level = 0;")
-          i_lvl = text.find("do_initcall_level(level);")
-          i_if3 = text.find("if (level == 3)")
-          i_lp  = text.find("for (;;)")
-          assert i_hdr < i_lvl < i_if3 < i_lp, "ordering broken"
-          for old in ("P10", "P11", "P12", "P13", "P14"):
+          i_uh = text.find("usermodehelper_enable();")
+          i_lp = text.find("for (;;)")
+          i_di = text.find("do_initcalls();")
+          assert i_uh < i_lp < i_di, "loop must sit between usermodehelper_enable and do_initcalls"
+          for old in ("P10", "P11", "P12", "P13", "P14", "P15"):
               assert old not in text, old + " found!"
-          print("VERIFIED: P15-A loop after level 3; no P10-P14; braces wrapped")
+          print("VERIFIED: single P16 loop between usermodehelper_enable and do_initcalls; no P10-P15")
           PYEOF2
-          grep -n -B3 -A8 'P15: after initcall level 3' init/main.c
+          grep -n -B2 -A4 'P16: before do_initcalls' init/main.c
 
       - name: Build kernel
         run: |
@@ -309,18 +298,26 @@ jobs:
           grep -E '^(CONFIG_ARCH_QCOM|CONFIG_MSM_GENI_SE|CONFIG_SERIAL_CORE|CONFIG_SERIAL_CORE_CONSOLE|CONFIG_SERIAL_EARLYCON|CONFIG_SERIAL_MSM_GENI|CONFIG_SERIAL_MSM_GENI_CONSOLE|CONFIG_SERIAL_MSM_GENI_EARLY_CONSOLE)=' out/.config || echo "FATAL: config entries missing!"
           echo "===== 验证内核符号 ====="
           nm -an out/vmlinux | grep -E 'msm_geni_serial_earlycon_setup|msm_geni_serial_console_write' || echo "FATAL: earlycon symbol missing in vmlinux!"
-      - name: "Verify P15-A probe in vmlinux disassembly"
+      - name: "Verify P16 probe in vmlinux disassembly"
         if: always()
         run: |
           cd kernel54
-          echo "===== do_initcalls: level==3 check + yield loop ====="
-          llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk '/<do_initcalls>:/,/^$/' > /tmp/dic.asm
-          echo "--- bl do_initcall_level ---"
-          grep -n -E 'bl\s+.*<do_initcall_level>' /tmp/dic.asm | head -5
-          echo "--- cmp level==3 (w19/x19 vs 3) + yield + backward branch ---"
-          grep -n -B3 -A2 'yield' /tmp/dic.asm | head -20
-          echo "--- counts ---"
-          echo -n "yield count: "; grep -c 'yield' /tmp/dic.asm || true
+          echo "===== locate P16 loop: try do_basic_setup, then kernel_init_freeable ====="
+          for fn in do_basic_setup kernel_init_freeable; do
+            echo "--- scanning <$fn> ---"
+            llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk -v f="$fn" '$0 ~ "<" f ">:" {p=1} p && /^$/ {exit} p' > /tmp/fn.asm
+            echo -n "yield count in $fn: "
+            grep -c 'yield' /tmp/fn.asm || true
+            grep -n -B2 -A1 'yield' /tmp/fn.asm | head -8
+          done
+          echo "===== binary pattern check: yield (3f2003d5) + back-branch (ffffff17) ====="
+          python3 - << 'PYEOF3'
+          data = open('out/arch/arm64/boot/Image','rb').read()
+          pat = bytes([0x3f,0x20,0x03,0xd5,0xff,0xff,0xff,0x17])
+          i = data.find(pat)
+          print("P16 loop pattern at Image offset:", hex(i) if i>=0 else "NOT FOUND")
+          print("occurrences:", data.count(pat))
+          PYEOF3
 
       - name: Show errors
         if: always()
