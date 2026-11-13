@@ -388,6 +388,13 @@ jobs:
           name: cas_vmlinux
           path: kernel54/out/vmlinux
           if-no-files-found: warn
+      - name: Upload kernel config
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cas_kernel_config
+          path: kernel54/out/.config
+          if-no-files-found: warn
       # ===== 保存编译输出缓存 (仅成功时) =====
       - name: Save build output cache
         if: success()
