@@ -374,6 +374,20 @@ jobs:
         with:
           name: DTB_cas_core
           path: kernel54/out/arch/arm64/boot/dts/qcom/*.dtb
+      - name: Upload System.map
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cas_system_map
+          path: kernel54/out/System.map
+          if-no-files-found: warn
+      - name: Upload vmlinux
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cas_vmlinux
+          path: kernel54/out/vmlinux
+          if-no-files-found: warn
       # ===== 保存编译输出缓存 (仅成功时) =====
       - name: Save build output cache
         if: success()
