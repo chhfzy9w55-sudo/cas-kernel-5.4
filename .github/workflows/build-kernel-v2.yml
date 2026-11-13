@@ -1,88 +1,383 @@
-name: build-kernel-sm8250
-
+name: build-cas-core
 on:
   workflow_dispatch:
-
+permissions:
+  contents: read
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
-
+    timeout-minutes: 180
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
       - name: Install deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential bc bison flex \
-            libssl-dev libelf-dev device-tree-compiler \
-            python3 python3-pip xz-utils \
-            clang-14 lld-14 llvm-14 \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
-
-      - name: Verify toolchain
+          for attempt in 1 2 3 4 5; do
+            echo "=== apt attempt $attempt ==="
+            sudo apt-get update && sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev device-tree-compiler python3 python3-pip xz-utils curl ca-certificates clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu && break
+            echo "apt attempt $attempt failed, retrying in 30s..."
+            sleep 30
+          done
+          which clang-14 && which aarch64-linux-gnu-gcc && which ld.lld-14
+      # ===== 缓存 1: 内核源码 =====
+      - name: Cache kernel source
+        id: cache-src
+        uses: actions/cache@v4
+        with:
+          path: kernel54
+          key: kernel-src-5.4-qgki-v3
+      - name: Clone 5.4 kernel
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
-          echo "=== clang ==="
-          which clang-14
-          clang-14 --version | head -2
-          echo "=== cross gcc ==="
-          which aarch64-linux-gnu-gcc
-          aarch64-linux-gnu-gcc --version | head -1
-          echo "=== llvm tools ==="
-          which llvm-ar-14 llvm-nm-14 llvm-objcopy-14 ld.lld-14
-
-      - name: Clone AOSP common
+          rm -rf kernel54
+          git clone --depth=1 -b 5.4 https://github.com/rofikkerneldev/qgki_kona_5.4.git kernel54
+      - name: Fetch and Move 4.19 sources
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
-          git clone --depth=1 -b android11-5.4 \
-            https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common.git \
-            kernel
-          cd kernel && git rev-parse HEAD
-
-      - name: Apply fragment
+          set -euo pipefail
+          cd kernel54
+          mkdir -p port_cas_temp/cas_qcom
+          BASE="https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss"
+          curl -sL --max-time 60 -o include/linux/pmic-voter.h "$BASE/include/linux/pmic-voter.h"
+          curl -sL --max-time 60 -o port_cas_temp/cas_qcom/pmic-voter.c "$BASE/drivers/power/supply/qcom/pmic-voter.c"
+          for dir in "drivers/input/misc/aw8697_haptic:aw8697_haptic" "drivers/power/supply/cas_qcom:cas_qcom"; do
+            SRC=$(echo $dir | cut -d: -f1)
+            DEST="port_cas_temp/$(echo $dir | cut -d: -f2)"
+            mkdir -p "$DEST"
+            API_URL="https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/contents/$SRC?ref=cas-q-oss"
+            curl -sL "$API_URL" | grep '"name"' | awk -F'"' '{print $4}' | while read f; do
+              if [ "$f" != "pmic-voter.c" ] || [ "$DEST" != "port_cas_temp/cas_qcom" ]; then
+                curl -sL --max-time 60 -o "$DEST/$f" "$BASE/$SRC/$f" 2>/dev/null
+              fi
+            done
+          done
+          rm -rf drivers/port_cas
+          mv port_cas_temp drivers/port_cas
+          test -s drivers/port_cas/cas_qcom/battery.c || exit 1
+          test -s drivers/port_cas/cas_qcom/pmic-voter.c || exit 1
+      - name: Suture power_supply.h
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
-          cd kernel
-          cp $GITHUB_WORKSPACE/vendor_xiaomi_cas_gki.fragment arch/arm64/configs/
-          make ARCH=arm64 gki_defconfig
-          ./scripts/kconfig/merge_config.sh -m .config arch/arm64/configs/vendor_xiaomi_cas_gki.fragment
-          make ARCH=arm64 olddefconfig
-          echo "=== 关键配置检查 ==="
-          grep -E "^CONFIG_(QCOM_RPMH|DRM_MSM|SERIAL_QCOM_GENI|I2C_QCOM_GENI|SCSI_UFS_QCOM)=" .config || true
+          set -euo pipefail
+          cd kernel54
+          cp include/linux/power_supply.h include/linux/power_supply.h.bak
+          curl -sL --max-time 60 -o /tmp/ps_4_19.h "https://raw.githubusercontent.com/MiCode/Xiaomi_Kernel_OpenSource/cas-q-oss/include/linux/power_supply.h"
+          python3 << 'PYEOF'
+          import re
+          from pathlib import Path
+          target_h = Path("include/linux/power_supply.h")
+          content = target_h.read_text()
+          cas = Path('/tmp/ps_4_19.h').read_text()
+          all_symbols = set(re.findall(r'\b(POWER_SUPPLY_[A-Z0-9_]+)\b', cas))
+          missing = [s for s in all_symbols if s not in content]
+          if missing:
+              insertion = "\n\n/* Injected from 4.19 */\n"
+              for i, m in enumerate(missing):
+                  insertion += f"#ifndef {m}\n#define {m} (0x8000 + {i})\n#endif\n"
+              last_endif = content.rfind('#endif')
+              target_h.write_text(content[:last_endif] + insertion + content[last_endif:])
+          PYEOF
 
-      - name: Build Image
+      - name: Patch API compatibility
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
-          cd kernel
-          set +e
-          make ARCH=arm64 \
-            CC=clang-14 \
-            LD=ld.lld-14 \
-            AR=llvm-ar-14 \
-            NM=llvm-nm-14 \
-            OBJCOPY=llvm-objcopy-14 \
-            OBJDUMP=llvm-objdump-14 \
-            STRIP=llvm-strip-14 \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LLVM=1 \
-            -j$(nproc) Image > build.log 2>&1
-          RESULT=$?
-          if [ $RESULT -ne 0 ]; then
-            echo "===== BUILD FAILED (exit $RESULT) ====="
-            echo ""
-            echo "===== FIRST 20 ERRORS ====="
-            grep -i -m 20 -E "error:|Error [0-9]|undefined reference|cannot find|No such file" build.log || true
-            echo ""
-            echo "===== LAST 40 LINES ====="
-            tail -40 build.log
+          set -euo pipefail
+          cd kernel54
+          python3 << 'PYEOF'
+          from pathlib import Path
+          for path in Path("drivers/port_cas").rglob("*.c"):
+              text = path.read_text(errors="replace")
+              text = text.replace('wakeup_source_register("', 'wakeup_source_register(NULL, "')
+              text = text.replace("asm/uaccess.h", "linux/uaccess.h")
+              if "do_gettimeofday" in text and "ktime_get_real_ts64" not in text:
+                  preamble = "#include <linux/time64.h>\n#include <linux/ktime.h>\n#include <linux/timekeeping.h>\n"
+                  preamble += "#define do_gettimeofday(tv) do { struct timespec64 _ts; ktime_get_real_ts64(&_ts); (tv)->tv_sec = _ts.tv_sec; (tv)->tv_usec = _ts.tv_nsec / 1000; } while (0)\n"
+                  text = preamble + text
+              path.write_text(text)
+          PYEOF
+      - name: Configure Makefiles
+        if: steps.cache-src.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd kernel54
+          grep -q 'port_cas' drivers/Makefile || echo 'obj-y += port_cas/' >> drivers/Makefile
+          printf 'obj-y += aw8697_haptic/\nobj-y += cas_qcom/\n' > drivers/port_cas/Makefile
+          printf 'obj-y += aw8697.o\n' > drivers/port_cas/aw8697_haptic/Makefile
+          printf 'obj-y += bq27z561_fg.o\n' > drivers/port_cas/cas_qcom/Makefile
+          # trace.h: clang-14 无法解析 TRACE_INCLUDE_PATH，注释掉 define_trace.h 引用
+          grep -q "ccflags-y.*drivers/clk/qcom" drivers/clk/qcom/Makefile || sed -i "1i ccflags-y += -I$(pwd)/drivers/clk/qcom" drivers/clk/qcom/Makefile
+          # 禁用 gcc-wrapper.py forbidden warning 包装器
+          sed -i '/^CC.*gcc-wrapper\.py/c\CC\t\t= $(REAL_CC)' Makefile
+      # ===== 新增: 检查 serial Kconfig 真实配置符号 =====
+      - name: Check serial Kconfig symbols
+        run: |
+          cd kernel54
+          echo "=== 检查 Kconfig 和 Makefile 的配置符号 ==="
+          grep -nE 'SERIAL_MSM_GENI(_CONSOLE|_EARLY_CONSOLE)?' drivers/tty/serial/Kconfig drivers/tty/serial/Makefile || true
+      # ===== 缓存 2: 编译输出 (增量编译) =====
+      - name: Restore build output cache
+        uses: actions/cache/restore@v4
+        with:
+          path: kernel54/out
+          key: kernel-build-out-v7
+          restore-keys: |
+            kernel-build-out-
+      - name: "Strip all probes from head.S (B0 clean build)"
+        run: |
+          set -euo pipefail
+          cd kernel54
+          python3 << 'PYEOF'
+          from pathlib import Path
+          p = Path("arch/arm64/kernel/head.S")
+          text = p.read_text()
+          # Strip probe 9: remove .Lprobe9 busy loop at __primary_switched entry
+          old9 = '__primary_switched:\n.Lprobe9:\n\tb\t.Lprobe9\n\tadrp'
+          new9 = '__primary_switched:\n\tadrp'
+          if old9 in text:
+              text = text.replace(old9, new9, 1)
+              print("stripped probe 9")
+          else:
+              if '__primary_switched:\n\tadrp' in text:
+                  print("probe 9 not found (already clean)")
+              else:
+                  print("ERROR: __primary_switched marker unexpected")
+                  exit(1)
+          # Verify NO probe residue of any kind
+          residue = []
+          for label in ['.Lprobe6a', '.Lprobe7', '.Lprobe8', '.Lprobe9']:
+              if label in text:
+                  residue.append(label)
+          if '1:\n\tb\t1b' in text:
+              residue.append('1:/b 1b busy')
+          if residue:
+              print("ERROR: probe residue found:", residue)
+              exit(1)
+          print("VERIFIED: head.S is pure original, zero probes")
+          p.write_text(text)
+          PYEOF
+          grep -A10 "^__primary_switch:" arch/arm64/kernel/head.S | head -14
+
+      - name: "Insert P19 probe into init/main.c (after initcall level 2)"
+        run: |
+          set -euo pipefail
+          cd kernel54
+          # 清理缓存/旧探针残留: git checkout 恢复 pristine; 失败则从上游 raw 下载
+          if git checkout -- init/main.c 2>/dev/null; then
+            echo "git checkout: init/main.c restored to pristine"
+          else
+            echo "git checkout failed, re-fetch pristine from upstream"
+            curl -sL --max-time 60 -o init/main.c https://raw.githubusercontent.com/rofikkerneldev/qgki_kona_5.4/5.4/init/main.c
+          fi
+          # 断言缓存恢复后无任何旧探针
+          if grep -nE 'P1[0-8]|level == 1|level == 0|level == 3' init/main.c; then
+            echo "ERROR: old probe residue still present after restore!"
             exit 1
           fi
-          ls -la arch/arm64/boot/Image
+          echo "CLEAN: no P10-P18 residue after restore"
+          python3 << 'PYEOF2'
+          from pathlib import Path
+          p = Path("init/main.c")
+          text = p.read_text()
+          anchor = ("\tfor (level = 0; level < ARRAY_SIZE(initcall_levels) - 1; level++)\n"
+                    "\t\tdo_initcall_level(level);")
+          repl   = ("\tfor (level = 0; level < ARRAY_SIZE(initcall_levels) - 1; level++) {\n"
+                    "\t\tdo_initcall_level(level);\n"
+                    "\n"
+                    "\t\tif (level == 2) {\n"
+                    "\t\t\t/* P19: stop after initcall level 2 */\n"
+                    "\t\t\tfor (;;)\n"
+                    "\t\t\t\tcpu_relax();\n"
+                    "\t\t}\n"
+                    "\t}")
+          if "P19: stop after initcall level 2" in text:
+              print("P19 already present (idempotent)")
+          elif anchor in text:
+              assert text.count(anchor) == 1
+              text = text.replace(anchor, repl, 1)
+              p.write_text(text)
+              print("P19 inserted (loop wrapped, dead loop after level 2)")
+          else:
+              print("ERROR: anchor not found in init/main.c")
+              raise SystemExit(1)
+          assert text.count("for (;;)") == 1, "must be exactly one for(;;)"
+          assert text.count("if (level == 2)") == 1
+          assert "if (level == 1)" not in text, "P18 condition residue!"
+          assert "if (level == 0)" not in text, "P17 condition residue!"
+          assert "if (level == 3)" not in text, "P15-A condition residue!"
+          i_hdr = text.find("for (level = 0;")
+          i_lvl = text.find("do_initcall_level(level);")
+          i_if2 = text.find("if (level == 2)")
+          i_lp  = text.find("for (;;)")
+          assert i_hdr < i_lvl < i_if2 < i_lp, "ordering broken"
+          for old in ("P10", "P11", "P12", "P13", "P14", "P15", "P16", "P17", "P18"):
+              assert old not in text, old + " found!"
+          print("VERIFIED: P19 loop after level 2; no P10-P18; braces wrapped")
+          PYEOF2
+          grep -n -B3 -A8 'P19: stop after initcall level 2' init/main.c
 
-      - name: Upload artifact
+      - name: Build kernel
+        run: |
+          set -o pipefail
+          cd kernel54
+          # 强制重编译 head.S (CurrentEL time probe patch已在上一步应用)
+          rm -f out/arch/arm64/kernel/head.o out/arch/arm64/kernel/head.s out/init/main.o out/init/built-in.o out/arch/arm64/boot/Image
+          touch arch/arm64/kernel/head.S
+          export ARCH=arm64
+          export LLVM=1
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=clang-14
+          export LD=ld.lld-14
+          export AR=llvm-ar-14
+          export NM=llvm-nm-14
+          export OBJCOPY=llvm-objcopy-14
+          export OBJDUMP=llvm-objdump-14
+          export STRIP=llvm-strip-14
+          export HOSTCC=clang-14
+          export HOSTLD=ld.lld-14
+          sudo ln -sf $(which ld.lld-14) /usr/local/bin/ld.lld
+          sudo ln -sf $(which llvm-ar-14) /usr/local/bin/llvm-ar
+          sudo ln -sf $(which llvm-nm-14) /usr/local/bin/llvm-nm
+          sudo ln -sf $(which llvm-objcopy-14) /usr/local/bin/llvm-objcopy
+          sudo ln -sf $(which llvm-objdump-14) /usr/local/bin/llvm-objdump
+          sudo ln -sf $(which llvm-strip-14) /usr/local/bin/llvm-strip
+          sudo ln -sf $(which clang-14) /usr/local/bin/clang
+          # 如果 out 目录没有 .config，执行完整配置流程
+          if [ ! -f out/.config ]; then
+            echo "=== 首次配置 ==="
+            make O=out gki_defconfig
+            if [ -f arch/arm64/configs/vendor/kona_QGKI.config ]; then
+              cd out && ../scripts/kconfig/merge_config.sh -m .config ../arch/arm64/configs/vendor/kona_QGKI.config && cd ..
+            fi
+            bash scripts/config --file out/.config --enable I2C
+            bash scripts/config --file out/.config --enable POWER_SUPPLY
+            bash scripts/config --file out/.config --enable INPUT
+            bash scripts/config --file out/.config --enable INPUT_MISC
+            bash scripts/config --file out/.config --enable MHI_BUS
+            bash scripts/config --file out/.config --enable SM_GCC_KONA
+            bash scripts/config --file out/.config --enable QCOM_PDC
+            bash scripts/config --file out/.config --enable SCSI_UFS_QCOM
+            bash scripts/config --file out/.config --enable SCSI_UFSHCD_PLATFORM
+            bash scripts/config --file out/.config --disable USB_PD_POLICY
+          else
+            echo "=== 缓存命中，使用已有 .config ==="
+          fi
+          # ====== 强制启用 earlycon/console 配置 (每次都执行, 幂等) ======
+          echo "=== 启用 SERIAL_MSM_GENI_CONSOLE (earlycon + console) ==="
+          # v6: 恢复串口驱动 + 禁用 EFI stub (XBL 不认 MZ 头)
+          bash scripts/config --file out/.config --enable ARCH_QCOM
+          bash scripts/config --file out/.config --enable MSM_GENI_SE
+          bash scripts/config --file out/.config --enable SERIAL_MSM_GENI
+          bash scripts/config --file out/.config --enable SERIAL_MSM_GENI_CONSOLE
+          bash scripts/config --file out/.config --disable QCOM_GENI_SE
+          # 强制关闭 EFI stub - XBL 只认纯 ARM64 Image
+          bash scripts/config --file out/.config --disable EFI
+          bash scripts/config --file out/.config --disable EFI_STUB
+          bash scripts/config --file out/.config --disable EFI_ARM_STUB
+          # v8: 禁用 DRM_MSM 显示驱动 (排除 DPU/MDSS 早期静默崩溃)
+          bash scripts/config --file out/.config --disable DRM_MSM
+          # 强制重算依赖
+          make O=out ARCH=arm64 olddefconfig
+          # 验证关键 CONFIG
+          echo "=== 验证关键 CONFIG ==="
+          for cfg in \
+              CONFIG_SCSI_UFSHCD_QTI \
+              CONFIG_SCSI_UFS_QCOM \
+              CONFIG_SM_GCC_KONA \
+              CONFIG_QCOM_PDC \
+              CONFIG_ARM_SMMU \
+              CONFIG_QCOM_RPMH \
+              CONFIG_QCOM_CLK_RPMH \
+              CONFIG_QCOM_SCM \
+              CONFIG_QCOM_SMEM \
+              CONFIG_PINCTRL_KONA \
+              CONFIG_INTERCONNECT_QCOM_KONA \
+              CONFIG_COMMON_CLK_QCOM \
+              CONFIG_SCSI_UFSHCD \
+              CONFIG_REGULATOR \
+              CONFIG_SERIAL_MSM_GENI \
+              CONFIG_SERIAL_MSM_GENI_CONSOLE \
+              CONFIG_SERIAL_MSM_GENI_EARLY_CONSOLE \
+              CONFIG_MSM_GENI_SE \
+              CONFIG_ARCH_QCOM \
+              CONFIG_EFI\
+              CONFIG_DRM_MSM
+          do
+            grep -E "^${cfg}=" out/.config || echo "WARN: ${cfg} not set!"
+          done
+          # 增量编译
+          make O=out -j$(nproc) KCFLAGS="-Wno-align-mismatch -Wno-error -Wno-void-pointer-to-int-cast -Wno-unused-const-variable -Wno-section -Wno-misleading-indentation" Image dtbs 2>&1 | tee build.log
+          echo "=== DTB 产物 ==="
+          find out/arch/arm64/boot/dts -name '*.dtb' -exec ls -la {} \; 2>/dev/null || echo "No DTB found"
+          # ====== 新增: 验证 earlycon/console 编译产物 ======
+          echo "=== 检查 Image 头部 (必须不是 MZ) ==="
+          xxd -l 16 out/arch/arm64/boot/Image
+          echo "=== 检查 .o 文件是否生成 ==="
+          find out/drivers/tty/serial -name 'msm_geni_serial*.o' -print
+          echo "=== 检查 Image 中是否有 earlycon 字符串 ==="
+          strings out/arch/arm64/boot/Image | grep -i 'msm_geni' || echo "WARN: msm_geni not found in Image!"
+          echo "=== 检查 Image 中是否有 earlycon 注册函数 ==="
+          strings out/arch/arm64/boot/Image | grep -i 'geni_serial_earlycon' || echo "WARN: geni_serial_earlycon not found!"
+      - name: "Verify B1 serial config and symbols"
+        if: always()
+        run: |
+          cd kernel54
+          echo "===== 验证最终 .config ====="
+          grep -E '^(CONFIG_ARCH_QCOM|CONFIG_MSM_GENI_SE|CONFIG_SERIAL_CORE|CONFIG_SERIAL_CORE_CONSOLE|CONFIG_SERIAL_EARLYCON|CONFIG_SERIAL_MSM_GENI|CONFIG_SERIAL_MSM_GENI_CONSOLE|CONFIG_SERIAL_MSM_GENI_EARLY_CONSOLE)=' out/.config || echo "FATAL: config entries missing!"
+          echo "===== 验证内核符号 ====="
+          nm -an out/vmlinux | grep -E 'msm_geni_serial_earlycon_setup|msm_geni_serial_console_write' || echo "FATAL: earlycon symbol missing in vmlinux!"
+      - name: "Verify P19 probe in vmlinux disassembly"
+        if: always()
+        run: |
+          cd kernel54
+          echo "===== source check: no P18 level-1 condition ====="
+          grep -nE 'P1[0-8]|level == 1|level == 0|level == 3' init/main.c && echo "ERROR: old probe found!" || echo "CLEAN: init/main.c has only P19"
+          echo "===== locate P19 loop: do_basic_setup / kernel_init_freeable ====="
+          for fn in do_basic_setup kernel_init_freeable; do
+            echo "--- scanning <$fn> ---"
+            llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk -v f="$fn" '$0 ~ "<" f ">:" {p=1} p && /^$/ {exit} p' > /tmp/fn.asm
+            echo -n "yield count in $fn: "
+            grep -c 'yield' /tmp/fn.asm || true
+            grep -n -B4 -A1 'yield' /tmp/fn.asm | head -10
+          done
+          echo "===== binary pattern check: yield (3f2003d5) + back-branch (ffffff17) ====="
+          python3 - << 'PYEOF3'
+          data = open('out/arch/arm64/boot/Image','rb').read()
+          pat = bytes([0x3f,0x20,0x03,0xd5,0xff,0xff,0xff,0x17])
+          i = data.find(pat)
+          print("P19 loop pattern at Image offset:", hex(i) if i>=0 else "NOT FOUND")
+          print("occurrences:", data.count(pat))
+          PYEOF3
+
+      - name: Show errors
+        if: always()
+        run: |
+          cd kernel54
+          if [ -f build.log ]; then
+            grep -niE 'error:|fatal error:|undefined reference|undefined symbol|No rule|ld\.lld:|clang: error:' build.log | tail -50
+          fi
+      - name: Upload build log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-image
-          path: kernel/arch/arm64/boot/Image
-          retention-days: 7
+          name: cas-kernel-build-log
+          path: kernel54/build.log
+          if-no-files-found: warn
+      - name: Upload Image
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image_cas_core
+          path: kernel54/out/arch/arm64/boot/Image
+      - name: Upload DTB
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DTB_cas_core
+          path: kernel54/out/arch/arm64/boot/dts/qcom/*.dtb
+      # ===== 保存编译输出缓存 (仅成功时) =====
+      - name: Save build output cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: kernel54/out
+          key: kernel-build-out-v7
