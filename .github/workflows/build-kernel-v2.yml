@@ -193,7 +193,7 @@ jobs:
               assert old not in text, old + " found!"
           i_fn = text.find("of_platform_default_populate_init(void)")
           i_lp = text.find("for (;;)")
-          i_pause = text.find("device_links_supplier_sync_state_pause();")
+          i_pause = text.find("device_links_supplier_sync_state_pause();", i_lp)
           assert i_fn < i_lp < i_pause, "ordering: fn entry < loop < pause"
           print("VERIFIED: P27-A entry stop before pause; no P10-P19; ordering ok")
           PYEOF2
