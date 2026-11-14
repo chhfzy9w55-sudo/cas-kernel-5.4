@@ -157,7 +157,7 @@ jobs:
           PYEOF
           grep -A10 "^__primary_switch:" arch/arm64/kernel/head.S | head -14
 
-      - name: "Insert P27-C-1 probe into drivers/of/platform.c (atomic counter stop@25 in bus_create)"
+      - name: "Insert P27-C-2 probe into drivers/of/platform.c (atomic counter stop@60 in bus_create)"
         run: |
           set -euo pipefail
           cd kernel54
@@ -177,20 +177,20 @@ jobs:
           p = Path("drivers/of/platform.c")
           text = p.read_text()
           a1 = "static const struct of_device_id of_skipped_node_table[] = {\n\t{ .compatible = \"operating-points-v2\", },\n\t{} /* Empty terminated list */\n};\n"
-          r1 = a1 + "static atomic_t p27c_count = ATOMIC_INIT(0);\nstatic bool p27c_active;\n#define P27C_STOP_AT 25\n"
+          r1 = a1 + "static atomic_t p27c_count = ATOMIC_INIT(0);\nstatic bool p27c_active;\n#define P27C_STOP_AT 60\n"
           a2 = "\t/* Populate everything else. */\n\tof_platform_default_populate(NULL, NULL, NULL);\n\n\treturn 0;"
           r2 = "\t/* Populate everything else. */\n\tatomic_set(&p27c_count, 0);\n\tWRITE_ONCE(p27c_active, true);\n\tof_platform_default_populate(NULL, NULL, NULL);\n\tWRITE_ONCE(p27c_active, false);\n\n\treturn 0;"
           a3 = "\tconst char *bus_id = NULL;\n\tvoid *platform_data = NULL;\n\tint rc = 0;\n\n\t/* Make sure it has a compatible property */"
-          r3 = "\tconst char *bus_id = NULL;\n\tvoid *platform_data = NULL;\n\tint rc = 0;\n\n\t/* P27-C-1: stop at bus_create call #25 (before any filter) */\n\tif (READ_ONCE(p27c_active)) {\n\t\tint p27c_n = atomic_inc_return(&p27c_count);\n\t\tif (p27c_n == P27C_STOP_AT) {\n\t\t\tfor (;;)\n\t\t\t\tcpu_relax();\n\t\t}\n\t}\n\n\t/* Make sure it has a compatible property */"
-          if "P27-C-1: stop at bus_create call #25" in text:
-              print("P27-C-1 already present (idempotent)")
+          r3 = "\tconst char *bus_id = NULL;\n\tvoid *platform_data = NULL;\n\tint rc = 0;\n\n\t/* P27-C-2: stop at bus_create call #60 (before any filter) */\n\tif (READ_ONCE(p27c_active)) {\n\t\tint p27c_n = atomic_inc_return(&p27c_count);\n\t\tif (p27c_n == P27C_STOP_AT) {\n\t\t\tfor (;;)\n\t\t\t\tcpu_relax();\n\t\t}\n\t}\n\n\t/* Make sure it has a compatible property */"
+          if "P27-C-2: stop at bus_create call #60" in text:
+              print("P27-C-2 already present (idempotent)")
           else:
               assert text.count(a1) == 1, "a1"
               assert text.count(a2) == 1, "a2"
               assert text.count(a3) == 1, "a3"
               text = text.replace(a1, r1, 1).replace(a2, r2, 1).replace(a3, r3, 1)
               p.write_text(text)
-              print("P27-C-1 inserted (atomic counter stop@25 in of_platform_bus_create)")
+              print("P27-C-2 inserted (atomic counter stop@60 in of_platform_bus_create)")
           assert text.count("P27C_STOP_AT") == 2, "define + use"
           assert text.count("p27c_active") == 4, "decl + read + 2 writes"
           assert text.count("atomic_set(&p27c_count, 0);") == 1
@@ -204,14 +204,14 @@ jobs:
           assert "for_each_matching_node(node, reserved_mem_matches)" in text, "reserved-mem kept"
           assert text.count('of_find_node_by_path("/firmware")') == 1, "/firmware kept"
           assert text.count("of_platform_populate(node, NULL, NULL, NULL);") == 1, "fw populate kept"
-          print("VERIFIED: P27-C-1 counter@100 armed only around full-tree call; segments kept")
+          print("VERIFIED: P27-C-2 counter@100 armed only around full-tree call; segments kept")
           PYEOF2
-          grep -n -B2 -A8 'P27-C-1: stop at bus_create call #25' drivers/of/platform.c
+          grep -n -B2 -A8 'P27-C-2: stop at bus_create call #60' drivers/of/platform.c
       - name: Build kernel
         run: |
           set -o pipefail
           cd kernel54
-          # 强制重编译 drivers/of/platform.c (P27-C-1 probe patch applied in previous step)
+          # 强制重编译 drivers/of/platform.c (P27-C-2 probe patch applied in previous step)
           rm -f out/drivers/of/platform.o out/drivers/of/built-in.a out/arch/arm64/boot/Image
           touch drivers/of/platform.c
           export ARCH=arm64
@@ -317,14 +317,14 @@ jobs:
           grep -E '^(CONFIG_ARCH_QCOM|CONFIG_MSM_GENI_SE|CONFIG_SERIAL_CORE|CONFIG_SERIAL_CORE_CONSOLE|CONFIG_SERIAL_EARLYCON|CONFIG_SERIAL_MSM_GENI|CONFIG_SERIAL_MSM_GENI_CONSOLE|CONFIG_SERIAL_MSM_GENI_EARLY_CONSOLE)=' out/.config || echo "FATAL: config entries missing!"
           echo "===== 验证内核符号 ====="
           nm -an out/vmlinux | grep -E 'msm_geni_serial_earlycon_setup|msm_geni_serial_console_write' || echo "FATAL: earlycon symbol missing in vmlinux!"
-      - name: "Verify P27-C-1 probe in vmlinux disassembly"
+      - name: "Verify P27-C-2 probe in vmlinux disassembly"
         if: always()
         run: |
           cd kernel54
           echo "===== source check ====="
-          grep -nE 'P1[0-9]|P2[0-7]-[AB]|p20b_count|level == 3' drivers/of/platform.c && echo "ERROR: old probe found!" || echo "CLEAN: drivers/of/platform.c has only P27-C-1"
+          grep -nE 'P1[0-9]|P2[0-7]-[AB]|p20b_count|level == 3' drivers/of/platform.c && echo "ERROR: old probe found!" || echo "CLEAN: drivers/of/platform.c has only P27-C-2"
           echo "===== cmp with #100 (0x64) in of_platform_bus_create ====="
-          llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk '/<of_platform_bus_create/{p=1} p && /^$/{exit} p' | grep -E 'cmp\s+w[0-9]+, #0x19|$' | head -5 || true
+          llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk '/<of_platform_bus_create/{p=1} p && /^$/{exit} p' | grep -E 'cmp\s+w[0-9]+, #0x3c|$' | head -5 || true
           echo "===== yield loop must exist (1 occurrence in Image) ====="
           python3 - << 'PYEOF3'
           data = open('out/arch/arm64/boot/Image','rb').read()
