@@ -157,7 +157,7 @@ jobs:
           PYEOF
           grep -A10 "^__primary_switch:" arch/arm64/kernel/head.S | head -14
 
-      - name: "Insert P27-B probe into drivers/of/platform.c (#if 0 bypass full-tree populate)"
+      - name: "Insert P27-C-1 probe into drivers/of/platform.c (atomic counter stop@100 in bus_create)"
         run: |
           set -euo pipefail
           cd kernel54
@@ -176,32 +176,42 @@ jobs:
           from pathlib import Path
           p = Path("drivers/of/platform.c")
           text = p.read_text()
-          anchor = "\t/* Populate everything else. */\n\tof_platform_default_populate(NULL, NULL, NULL);\n\n\treturn 0;"
-          repl   = "\t/* Populate everything else. */\n#if 0\n\treturn of_platform_default_populate(NULL, NULL, NULL);\n#endif\n\treturn 0;"
-          if "P27-B: bypass full-tree populate via #if 0" in text:
-              print("P27-B already present (idempotent)")
-          elif anchor in text:
-              assert text.count(anchor) == 1
-              text = text.replace(anchor, repl, 1)
-              p.write_text(text)
-              print("P27-B inserted (#if 0 bypass of full-tree populate)")
+          a1 = "static const struct of_device_id of_skipped_node_table[] = {\n\t{ .compatible = \"operating-points-v2\", },\n\t{} /* Empty terminated list */\n};\n"
+          r1 = a1 + "static atomic_t p27c_count = ATOMIC_INIT(0);\nstatic bool p27c_active;\n#define P27C_STOP_AT 100\n"
+          a2 = "\t/* Populate everything else. */\n\tof_platform_default_populate(NULL, NULL, NULL);\n\n\treturn 0;"
+          r2 = "\t/* Populate everything else. */\n\tatomic_set(&p27c_count, 0);\n\tWRITE_ONCE(p27c_active, true);\n\tof_platform_default_populate(NULL, NULL, NULL);\n\tWRITE_ONCE(p27c_active, false);\n\n\treturn 0;"
+          a3 = "\tconst char *bus_id = NULL;\n\tvoid *platform_data = NULL;\n\tint rc = 0;\n\n\t/* Make sure it has a compatible property */"
+          r3 = "\tconst char *bus_id = NULL;\n\tvoid *platform_data = NULL;\n\tint rc = 0;\n\n\t/* P27-C-1: stop at bus_create call #100 (before any filter) */\n\tif (READ_ONCE(p27c_active)) {\n\t\tint p27c_n = atomic_inc_return(&p27c_count);\n\t\tif (p27c_n == P27C_STOP_AT) {\n\t\t\tfor (;;)\n\t\t\t\tcpu_relax();\n\t\t}\n\t}\n\n\t/* Make sure it has a compatible property */"
+          if "P27-C-1: stop at bus_create call #100" in text:
+              print("P27-C-1 already present (idempotent)")
           else:
-              print("ERROR: anchor not found in drivers/of/platform.c")
-              raise SystemExit(1)
-          assert text.count("#if 0") == 1, "exactly one #if 0"
-          assert "return of_platform_default_populate(NULL, NULL, NULL);" in text, "bypassed call kept as source"
-          # first two segments must remain intact
-          assert "for_each_matching_node(node, reserved_mem_matches)" in text, "reserved-mem loop kept"
-          assert text.count('of_find_node_by_path("/firmware")') == 1, "/firmware lookup kept"
-          assert text.count("of_platform_populate(node, NULL, NULL, NULL);") == 1, "/firmware populate kept"
-          print("VERIFIED: P27-B keeps reserved-mem + /firmware; only full-tree call bypassed")
+              assert text.count(a1) == 1, "a1"
+              assert text.count(a2) == 1, "a2"
+              assert text.count(a3) == 1, "a3"
+              text = text.replace(a1, r1, 1).replace(a2, r2, 1).replace(a3, r3, 1)
+              p.write_text(text)
+              print("P27-C-1 inserted (atomic counter stop@100 in of_platform_bus_create)")
+          assert text.count("P27C_STOP_AT") == 2, "define + use"
+          assert text.count("p27c_active") == 4, "decl + read + 2 writes"
+          assert text.count("atomic_set(&p27c_count, 0);") == 1
+          assert text.count("atomic_inc_return(&p27c_count)") == 1
+          assert text.count("for (;;)") == 1
+          i_decl = text.find("static atomic_t p27c_count")
+          i_probe = text.find("if (READ_ONCE(p27c_active))")
+          i_arm = text.find("WRITE_ONCE(p27c_active, true);")
+          i_call = text.find("of_platform_default_populate(NULL, NULL, NULL);\n\tWRITE_ONCE(p27c_active, false);")
+          assert i_decl < i_probe < i_arm < i_call, "ordering"
+          assert "for_each_matching_node(node, reserved_mem_matches)" in text, "reserved-mem kept"
+          assert text.count('of_find_node_by_path("/firmware")') == 1, "/firmware kept"
+          assert text.count("of_platform_populate(node, NULL, NULL, NULL);") == 1, "fw populate kept"
+          print("VERIFIED: P27-C-1 counter@100 armed only around full-tree call; segments kept")
           PYEOF2
-          grep -n -B4 -A8 '#if 0' drivers/of/platform.c
+          grep -n -B2 -A8 'P27-C-1: stop at bus_create call #100' drivers/of/platform.c
       - name: Build kernel
         run: |
           set -o pipefail
           cd kernel54
-          # 强制重编译 drivers/of/platform.c (P27-B probe patch applied in previous step)
+          # 强制重编译 drivers/of/platform.c (P27-C-1 probe patch applied in previous step)
           rm -f out/drivers/of/platform.o out/drivers/of/built-in.a out/arch/arm64/boot/Image
           touch drivers/of/platform.c
           export ARCH=arm64
@@ -307,20 +317,20 @@ jobs:
           grep -E '^(CONFIG_ARCH_QCOM|CONFIG_MSM_GENI_SE|CONFIG_SERIAL_CORE|CONFIG_SERIAL_CORE_CONSOLE|CONFIG_SERIAL_EARLYCON|CONFIG_SERIAL_MSM_GENI|CONFIG_SERIAL_MSM_GENI_CONSOLE|CONFIG_SERIAL_MSM_GENI_EARLY_CONSOLE)=' out/.config || echo "FATAL: config entries missing!"
           echo "===== 验证内核符号 ====="
           nm -an out/vmlinux | grep -E 'msm_geni_serial_earlycon_setup|msm_geni_serial_console_write' || echo "FATAL: earlycon symbol missing in vmlinux!"
-      - name: "Verify P27-B probe in vmlinux disassembly"
+      - name: "Verify P27-C-1 probe in vmlinux disassembly"
         if: always()
         run: |
           cd kernel54
           echo "===== source check ====="
-          grep -nE 'P1[0-9]|P2[0-9]|p20b_count|level == 3' drivers/of/platform.c && echo "ERROR: old probe found!" || echo "CLEAN: drivers/of/platform.c has only P27-B"
-          echo "===== of_platform_default_populate call in populate_init (must be GONE) ====="
-          llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk 'BEGIN{p=0} /<of_platform_default_populate_init/{p=1} p && /^$/{if (seen) exit; seen=1} p' | grep -c 'bl.*<of_platform_default_populate>' && echo "FAIL: call still present" || echo "OK: no call to of_platform_default_populate"
-          echo "===== reserved-mem + /firmware calls (must REMAIN) ====="
-          llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk 'BEGIN{p=0} /<of_platform_default_populate_init/{p=1} p && /^$/{if (seen) exit; seen=1} p' | grep -E 'bl.*<(of_platform_device_create|of_platform_populate)>' || echo "FAIL: reserved/firmware calls missing"
-          echo "===== binary pattern check: zero yield loops in populate_init ====="
+          grep -nE 'P1[0-9]|P2[0-7]-[AB]|p20b_count|level == 3' drivers/of/platform.c && echo "ERROR: old probe found!" || echo "CLEAN: drivers/of/platform.c has only P27-C-1"
+          echo "===== cmp with #100 (0x64) in of_platform_bus_create ====="
+          llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk '/<of_platform_bus_create/{p=1} p && /^$/{exit} p' | grep -E 'cmp\s+w[0-9]+, #0x64|$' | head -5 || true
+          echo "===== yield loop must exist (1 occurrence in Image) ====="
           python3 - << 'PYEOF3'
           data = open('out/arch/arm64/boot/Image','rb').read()
           pat = bytes([0x3f,0x20,0x03,0xd5,0xff,0xff,0xff,0x17])
+          i = data.find(pat)
+          print("probe loop at Image offset:", hex(i) if i>=0 else "NOT FOUND")
           print("occurrences:", data.count(pat))
           PYEOF3
       - name: Show errors
