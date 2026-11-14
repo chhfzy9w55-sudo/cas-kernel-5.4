@@ -157,7 +157,7 @@ jobs:
           PYEOF
           grep -A10 "^__primary_switch:" arch/arm64/kernel/head.S | head -14
 
-      - name: "Insert P20-B-3 probe into init/main.c (level 3 counter stop@23)"
+      - name: "Insert P20-B-4 probe into init/main.c (level 3 counter stop@25)"
         run: |
           set -euo pipefail
           cd kernel54
@@ -177,14 +177,14 @@ jobs:
           p = Path("init/main.c")
           text = p.read_text()
           anchor = "static void __init do_initcall_level(int level)\n{\n\tinitcall_entry_t *fn;\n\n\tstrcpy(initcall_command_line, saved_command_line);\n\tparse_args(initcall_level_names[level],\n\t\t   initcall_command_line, __start___param,\n\t\t   __stop___param - __start___param,\n\t\t   level, level,\n\t\t   NULL, &repair_env_string);\n\n\ttrace_initcall_level(initcall_level_names[level]);\n\tfor (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)\n\t\tdo_one_initcall(initcall_from_entry(fn));\n}"
-          repl   = "static void __init do_initcall_level(int level)\n{\n\tinitcall_entry_t *fn;\n\tint p20b_count = 0;\n\n\tstrcpy(initcall_command_line, saved_command_line);\n\tparse_args(initcall_level_names[level],\n\t\t   initcall_command_line, __start___param,\n\t\t   __stop___param - __start___param,\n\t\t   level, level,\n\t\t   NULL, &repair_env_string);\n\n\ttrace_initcall_level(initcall_level_names[level]);\n\tfor (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++) {\n\t\tdo_one_initcall(initcall_from_entry(fn));\n\n\t\tif (level == 3) {\n\t\t\tp20b_count++;\n\n\t\t\tif (p20b_count == 23) {\n\t\t\t\t/* P20-B-3: stop after arch initcall slot #23 */\n\t\t\t\tfor (;;)\n\t\t\t\t\tcpu_relax();\n\t\t\t}\n\t\t}\n\t}\n}"
-          if "P20-B-3: stop after arch initcall slot #23" in text:
-              print("P20-B-3 already present (idempotent)")
+          repl   = "static void __init do_initcall_level(int level)\n{\n\tinitcall_entry_t *fn;\n\tint p20b_count = 0;\n\n\tstrcpy(initcall_command_line, saved_command_line);\n\tparse_args(initcall_level_names[level],\n\t\t   initcall_command_line, __start___param,\n\t\t   __stop___param - __start___param,\n\t\t   level, level,\n\t\t   NULL, &repair_env_string);\n\n\ttrace_initcall_level(initcall_level_names[level]);\n\tfor (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++) {\n\t\tdo_one_initcall(initcall_from_entry(fn));\n\n\t\tif (level == 3) {\n\t\t\tp20b_count++;\n\n\t\t\tif (p20b_count == 25) {\n\t\t\t\t/* P20-B-4: stop after arch initcall slot #25 */\n\t\t\t\tfor (;;)\n\t\t\t\t\tcpu_relax();\n\t\t\t}\n\t\t}\n\t}\n}"
+          if "P20-B-4: stop after arch initcall slot #25" in text:
+              print("P20-B-4 already present (idempotent)")
           elif anchor in text:
               assert text.count(anchor) == 1
               text = text.replace(anchor, repl, 1)
               p.write_text(text)
-              print("P20-B-3 inserted (level 3 counter, stop at slot #23)")
+              print("P20-B-4 inserted (level 3 counter, stop at slot #25)")
           else:
               print("ERROR: anchor not found in init/main.c")
               raise SystemExit(1)
@@ -201,12 +201,12 @@ jobs:
           i_do   = text.find("do_one_initcall(initcall_from_entry(fn));")
           i_if3  = text.find("if (level == 3)")
           i_cnt  = text.find("p20b_count++;")
-          i_eq13 = text.find("p20b_count == 23")
+          i_eq13 = text.find("p20b_count == 25")
           i_lp   = text.find("for (;;)")
           assert i_decl < i_for < i_do < i_if3 < i_cnt < i_eq13 < i_lp, "ordering broken"
-          print("VERIFIED: P20-B-3 counter at level==3, stop at count 23; no P10-P19; braces wrapped")
+          print("VERIFIED: P20-B-4 counter at level==3, stop at count 25; no P10-P19; braces wrapped")
           PYEOF2
-          grep -n -B3 -A12 'P20-B-3: stop after arch initcall slot #23' init/main.c
+          grep -n -B3 -A12 'P20-B-4: stop after arch initcall slot #25' init/main.c
 
       - name: Build kernel
         run: |
@@ -318,13 +318,13 @@ jobs:
           grep -E '^(CONFIG_ARCH_QCOM|CONFIG_MSM_GENI_SE|CONFIG_SERIAL_CORE|CONFIG_SERIAL_CORE_CONSOLE|CONFIG_SERIAL_EARLYCON|CONFIG_SERIAL_MSM_GENI|CONFIG_SERIAL_MSM_GENI_CONSOLE|CONFIG_SERIAL_MSM_GENI_EARLY_CONSOLE)=' out/.config || echo "FATAL: config entries missing!"
           echo "===== 验证内核符号 ====="
           nm -an out/vmlinux | grep -E 'msm_geni_serial_earlycon_setup|msm_geni_serial_console_write' || echo "FATAL: earlycon symbol missing in vmlinux!"
-      - name: "Verify P20-B-3 probe in vmlinux disassembly"
+      - name: "Verify P20-B-4 probe in vmlinux disassembly"
         if: always()
         run: |
           cd kernel54
           echo "===== source check: no P10-P19 residue ====="
-          grep -nE 'P1[0-9]|level == 1|level == 2|level == 0' init/main.c && echo "ERROR: old probe found!" || echo "CLEAN: init/main.c has only P20-B-3"
-          echo "===== locate P20-B-3 loop in do_initcall_level / do_basic_setup ====="
+          grep -nE 'P1[0-9]|level == 1|level == 2|level == 0' init/main.c && echo "ERROR: old probe found!" || echo "CLEAN: init/main.c has only P20-B-4"
+          echo "===== locate P20-B-4 loop in do_initcall_level / do_basic_setup ====="
           for fn in do_initcall_level do_basic_setup kernel_init_freeable; do
             echo "--- scanning <$fn> ---"
             llvm-objdump-14 -d out/vmlinux 2>/dev/null | awk -v f="$fn" '$0 ~ "<" f ">:" {p=1} p && /^$/ {exit} p' > /tmp/fn.asm
@@ -337,7 +337,7 @@ jobs:
           data = open('out/arch/arm64/boot/Image','rb').read()
           pat = bytes([0x3f,0x20,0x03,0xd5,0xff,0xff,0xff,0x17])
           i = data.find(pat)
-          print("P20-B-3 loop pattern at Image offset:", hex(i) if i>=0 else "NOT FOUND")
+          print("P20-B-4 loop pattern at Image offset:", hex(i) if i>=0 else "NOT FOUND")
           print("occurrences:", data.count(pat))
           PYEOF3
 
