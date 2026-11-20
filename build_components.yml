@@ -1,0 +1,227 @@
+name: Build AOSP Components for cas→HyperOS3 Port
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: "Build target (all / dumpsys / vndservice / wpa / codec2)"
+        required: false
+        default: "all"
+
+env:
+  NDK_VERSION: r27c
+  AOSP_BRANCH: android16-release
+  TUNA_AOSP: https://aosp.tuna.tsinghua.edu.cn
+
+jobs:
+  build-components:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      # ============================================================
+      # STEP 0: Checkout 本仓库（含胶水源码 + 构建脚本）
+      # ============================================================
+      - uses: actions/checkout@v4
+
+      # ============================================================
+      # STEP 1: 安装 NDK r27c（交叉编译工具链）
+      # ============================================================
+      - name: Install NDK r27c
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-${{ env.NDK_VERSION }}-linux.zip
+          unzip -q android-ndk-${{ env.NDK_VERSION }}-linux.zip -d /opt/
+          rm android-ndk-${{ env.NDK_VERSION }}-linux.zip
+          export PATH=/opt/android-ndk-${{ env.NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+          aarch64-linux-android35-clang --version | head -1
+        shell: bash
+
+      # ============================================================
+      # STEP 2: 拉取 AOSP 源码（GitHub aosp-mirror，Actions 内网络通畅）
+      # ============================================================
+      - name: Clone AOSP source repos
+        run: |
+          mkdir -p /workspace/aosp && cd /workspace/aosp
+          for repo in platform_frameworks_native platform_system_core platform_system_libbase platform_frameworks_av platform_external_wpa_supplicant_8 platform_system_logging platform_system_libhidl; do
+            short=$(echo $repo | sed 's|platform_||')
+            if [ -d "$short" ]; then echo "SKIP $short"; continue; fi
+            echo "=== Cloning $short ==="
+            git clone --depth 1 -b android16-release --single-branch \
+              "https://github.com/aosp-mirror/$repo.git" "$short" 2>&1 | tail -1
+          done
+          echo "=== Cloned ==="
+          du -sh */
+        shell: bash
+
+      # ============================================================
+      # STEP 3: 下载 cas 设备运行时库（链接输入）
+      #         从 cas system.img 的 /system/lib64 提取的 A13 库集
+      #         下载源: 本仓库 release artifact 或 prebuilt 目录
+      # ============================================================
+      - name: Prepare cas runtime libs (link inputs)
+        run: |
+          mkdir -p /workspace/cas_libs
+          # 方法1: 从 release 下载（需预先上传）
+          # 方法2: 从 cas system.img 提取（需要 image）
+          # 方法3: 从 dada system_a 的 lib64 镜像内提取（如果 repo 内有）
+          if [ -d cas_libs ]; then
+            cp cas_libs/*.so /workspace/cas_libs/ 2>/dev/null
+            echo "Using pre-staged cas libs: $(ls /workspace/cas_libs/*.so | wc -l) files"
+          else
+            echo "WARN: cas_libs not found — will use only AOSP source headers for compilation"
+            echo "       Link stage requires the actual .so files from cas vendor/system"
+          fi
+        shell: bash
+
+      # ============================================================
+      # STEP 4: 编译 dumpsys（验证工具链 + 产出二进制）
+      # ============================================================
+      - name: Build dumpsys (A16 headers + NDK toolchain)
+        run: |
+          NDK=/opt/android-ndk-${{ env.NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64
+          SYS=$NDK/sysroot
+          CRT=$SYS/usr/lib/aarch64-linux-android/35
+          N=/workspace/aosp/native
+          CLANG="$NDK/bin/clang -target aarch64-linux-android35 --sysroot=$SYS"
+          INC="-I$N/cmds/dumpsys -I$N/libs/binder/include -I$N/libs/binderdebug/include -I$N/services/utils/include -I$N/include -I$N/libs/utils/include -I/workspace/aosp/libbase/include -I/workspace/aosp/core/include -I/workspace/aosp/logging/liblog/include"
+
+          mkdir -p output/dumpsys
+          $CLANG $INC -fPIC -O2 -std=c++17 -fno-rtti \
+            -c $N/cmds/dumpsys/dumpsys.cpp -o output/dumpsys_a.o
+          $CLANG $INC -fPIC -O2 -std=c++17 -fno-rtti \
+            -c $N/cmds/dumpsys/main.cpp -o output/dumpsys_b.o
+
+          # PriorityDumper 常量（A16 header 中 static const char16_t[] 需要定义文件）
+          cat > priority_arrays.cpp <<'CEOF'
+          #include <serviceutils/PriorityDumper.h>
+          namespace android {
+          const char16_t PriorityDumper::PRIORITY_ARG[] = u"--dump_priority";
+          const char16_t PriorityDumper::PRIORITY_ARG_CRITICAL[] = u"CRITICAL";
+          const char16_t PriorityDumper::PRIORITY_ARG_HIGH[] = u"HIGH";
+          const char16_t PriorityDumper::PRIORITY_ARG_NORMAL[] = u"NORMAL";
+          const char16_t PriorityDumper::PROTO_ARG[] = u"--proto";
+          }
+          CEOF
+          $CLANG $INC -fPIC -O2 -std=c++17 -fno-rtti -c priority_arrays.cpp -o priority_arrays.o
+
+          echo "=== dumpsys compiled OK ==="
+        shell: bash
+
+      # ============================================================
+      # STEP 5: 链接 dumpsys（需要 cas A16 运行时 .so）
+      #         如果 cas_libs 不可得，使用 NDK libc++_static 产出
+      #         自包含二进制（__ndk1 namespace）
+      # ============================================================
+      - name: Link dumpsys
+        run: |
+          NDK=/opt/android-ndk-${{ env.NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64
+          SYS=$NDK/sysroot
+          CRT=$SYS/usr/lib/aarch64-linux-android/35
+          RT=$NDK/lib/clang/18/lib/linux
+
+          # 方案 A: 链接 dada A16 运行时库（需 cas_libs/ 包含 .so）
+          if [ -d cas_libs ] && [ -f cas_libs/libbinder.so ]; then
+            $NDK/bin/clang++ -target aarch64-linux-android35 --sysroot=$SYS \
+              -nostdlib -fPIC -pie -o output/dumpsys \
+              $CRT/crtbegin_dynamic.o output/dumpsys_a.o output/dumpsys_b.o priority_arrays.o \
+              -L/workspace/cas_libs -lbinder -lbase -lcutils -llog -lutils -lbinderdebug \
+              $SYS/usr/lib/aarch64-linux-android/libc++_static.a \
+              $SYS/usr/lib/aarch64-linux-android/libc++abi.a \
+              $RT/libclang_rt.builtins-aarch64-android.a \
+              $CRT/libc.so $CRT/libm.so $CRT/libdl.so \
+              $CRT/crtend_android.o \
+              -fuse-ld=lld
+          else
+            # 方案 B: 纯 NDK 自包含（__ndk1 命名空间）
+            $NDK/bin/clang++ -target aarch64-linux-android35 --sysroot=$SYS \
+              -fPIC -pie -o output/dumpsys \
+              output/dumpsys_a.o output/dumpsys_b.o priority_arrays.o \
+              -llog -lbinder_ndk \
+              -static-libstdc++
+          fi
+
+          file output/dumpsys && readelf -d output/dumpsys | grep NEEDED | head -8
+          echo "DUMPSYS_BINARY_OK"
+        shell: bash
+
+      # ============================================================
+      # STEP 6: 编译 vndservice（如 A16 源码存在）
+      # ============================================================
+      - name: Build vndservice (if source exists)
+        run: |
+          N=/workspace/aosp/native
+          if [ -d "$N/cmds/vndservice" ]; then
+            echo "vndservice source exists — building"
+            NDK=/opt/android-ndk-${{ env.NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64
+            SYS=$NDK/sysroot
+            $NDK/bin/clang++ -target aarch64-linux-android35 --sysroot=$SYS \
+              -I$N/libs/binder/include -I$N/include \
+              -fPIC -O2 -std=c++17 -c $N/cmds/vndservice/*.cpp
+          else
+            echo "vndservice source NOT present in android16-release (removed upstream)"
+            echo "cas 的 /vendor/bin/vndservice 为 A13 产物——A16 libbinder 不导出 Parcel::print"
+            echo "→ 需要用 AOSP android-13 分支的 frameworks/native/cmds/vndservice 源码重编"
+          fi
+        shell: bash
+
+      # ============================================================
+      # STEP 7: 编译 wpa_supplicant（如果 boringssl 可获取）
+      # ============================================================
+      - name: Build wpa_supplicant
+        run: |
+          if [ -d /workspace/aosp/wpa/wpa_supplicant ]; then
+            cd /workspace/aosp/wpa/wpa_supplicant
+            cp defconfig .config
+            # Android 交叉编译配置
+            echo "CONFIG_CC=clang" >> .config
+            echo "CONFIG_DRIVER_NONE=y" >> .config
+            make -j2 CC="clang -target aarch64-linux-android35 --sysroot=$SYS" 2>&1 | tail -20 || true
+            ls -la wpa_supplicant 2>/dev/null && echo "WPA_OK" || echo "WPA_BUILD_INCOMPLETE"
+          else
+            echo "wpa_supplicant source not found in clone"
+          fi
+        shell: bash
+
+      # ============================================================
+      # STEP 8: 打包产物
+      # ============================================================
+      - name: Package build artifacts
+        run: |
+          mkdir -p artifacts/vendor/bin artifacts/vendor/lib64
+          [ -f output/dumpsys ] && cp output/dumpsys artifacts/vendor/bin/
+          [ -f wpa_supplicant ] && cp wpa_supplicant artifacts/vendor/bin/
+          find . -name "*.so" -newer . -exec cp {} artifacts/vendor/lib64/ \; 2>/dev/null || true
+          tar czf aosp_component_build.tar.gz artifacts/
+          sha256sum aosp_component_build.tar.gz > aosp_component_build.tar.gz.sha256
+        shell: bash
+
+      # ============================================================
+      # STEP 9: 上传产物
+      # ============================================================
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aosp-component-build
+          path: |
+            aosp_component_build.tar.gz
+            aosp_component_build.tar.gz.sha256
+          retention-days: 30
+
+  # ============================================================
+  # JOB 2: VNDK-30 库集打包（从 cas apex 提取，需 cas 镜像）
+  # ============================================================
+  package-vndk:
+    runs-on: ubuntu-latest
+    needs: build-components
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package VNDK-30 carry module
+        run: |
+          if [ -d vndk30_carry/VNDK30-Carry ]; then
+            cd vndk30_carry
+            zip -r VNDK30-Carry-v2.zip VNDK30-Carry/
+            sha256sum VNDK30-Carry-v2.zip > VNDK30-Carry-v2.zip.sha256
+            echo "VNDK30-Carry-v2 packaged"
+          else
+            echo "vndk30_carry dir not found in repo — skipping"
+          fi
+        shell: bash
